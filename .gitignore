@@ -1,0 +1,12 @@
+.DS_Store
+.theos/
+build/
+theos/
+vendor/x264/
+vendor/ffmpeg-4.4.1/
+vendor/ffmpeg-4.4.1.tar.xz
+vendor/vendor-dl.log
+tool/prefix/
+tool/*.log
+*.deb
+*.ipa

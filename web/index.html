@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>quietriot</title>
+<style>
+  body { background:#111; color:#eee; font-family:Helvetica,Arial,sans-serif; margin:0; text-align:center; }
+  h1 { font-size:18px; font-weight:normal; margin:10px 0 4px; }
+  #status { font-size:12px; color:#8f8; margin-bottom:8px; min-height:16px; }
+  video { width:100%; max-width:640px; background:#000; }
+  .btns { margin:12px auto 4px; }
+  button { font-size:16px; padding:10px 26px; margin:0 6px; border:1px solid #555;
+           border-radius:6px; background:#333; color:#eee; }
+  button.active { background:#4a7; border-color:#4a7; color:#fff; }
+  #err { color:#f88; font-size:12px; }
+</style>
+</head>
+<body>
+<h1>quietriot &middot; live</h1>
+<div id="status">connecting&hellip;</div>
+<video id="v" autoplay playsinline webkit-playsinline controls muted></video>
+<div class="btns">
+  <button id="rear">Rear</button>
+  <button id="front">Front</button>
+  <button id="reload">Reload</button>
+</div>
+<div id="err"></div>
+<script>
+(function () {
+  var video = document.getElementById('v');
+  var status = document.getElementById('status');
+  var err = document.getElementById('err');
+  var rear = document.getElementById('rear');
+  var front = document.getElementById('front');
+  var reload = document.getElementById('reload');
+  var cam = 'rear';
+
+  function setStatus(s) { status.innerHTML = s; }
+
+  function canNative() {
+    var v = document.createElement('video');
+    return !!v.canPlayType('application/vnd.apple.mpegurl');
+  }
+
+  function play() {
+    err.innerHTML = '';
+    var src = '/hls/stream.m3u8';
+    if (canNative()) {
+      video.src = src;
+      video.play();
+      setStatus('native HLS');
+      return;
+    }
+    // desktop browsers: try vendored hls.js, then CDN
+    var useCdn = !window.Hls;
+    var started = function () {
+      if (!window.Hls || !window.Hls.isSupported()) {
+        setStatus('no MSE support in this browser');
+        return;
+      }
+      var hls = window.Hls({ lowLatencyMode: true });
+      hls.loadSource(src);
+      hls.attachMedia(video);
+      hls.on(window.Hls.Events.MANIFEST_PARSED, function () { video.play(); });
+      setStatus('hls.js');
+    };
+    if (!useCdn) { started(); return; }
+    var sc = document.createElement('script');
+    sc.src = '/hls.min.js';
+    sc.onload = started;
+    sc.onerror = function () {
+      var cd = document.createElement('script');
+      cd.src = 'https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js';
+      cd.onload = started;
+      cd.onerror = function () { setStatus('cannot load hls.js (offline?)'); };
+      document.head.appendChild(cd);
+    };
+    document.head.appendChild(sc);
+  }
+
+  function refreshBtns() {
+    rear.className = cam === 'rear' ? 'active' : '';
+    front.className = cam === 'front' ? 'active' : '';
+  }
+
+  function poll() {
+    try {
+      var x = new XMLHttpRequest();
+      x.open('GET', '/status', true);
+      x.onreadystatechange = function () {
+        if (x.readyState !== 4) return;
+        try {
+          var s = eval('(' + x.responseText + ')');
+          cam = s.camera;
+          refreshBtns();
+          setStatus(
+            'cam: ' + s.camera + ' &middot; fps: ' + (s.fps ? s.fps.toFixed(1) : '-') +
+            ' &middot; drops: ' + s.drops +
+            ' &middot; encoder: ' + (s.ffmpeg ? 'OK' : '<b>DOWN</b>') +
+            ' &middot; up: ' + Math.floor(s.uptime / 60) + 'm'
+          );
+        } catch (e) {}
+      };
+      x.send(null);
+    } catch (e) {}
+  }
+  setInterval(poll, 3000);
+
+  function switchCam(which) {
+    var x = new XMLHttpRequest();
+    x.open('GET', '/switch?c=' + which, true);
+    x.onreadystatechange = function () {
+      if (x.readyState === 4) { poll(); }
+    };
+    x.send(null);
+  }
+
+  rear.onclick = function () { switchCam('rear'); };
+  front.onclick = function () { switchCam('front'); };
+  reload.onclick = function () { play(); };
+
+  play();
+  poll();
+})();
+</script>
+</body>
+</html>
