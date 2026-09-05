@@ -142,6 +142,7 @@ static pid_t qr_spawn_daemon(void)
     UIButton *_startBtn;
     UIButton *_stopBtn;
     NSTimer *_timer;
+    BOOL _pending;
 }
 - (void)refreshStatus;
 - (void)startTapped;
@@ -261,6 +262,7 @@ static int qr_json_int(const char *body, const char *key)
 
 - (void)refreshStatus
 {
+    if (_pending) return;
     __block QuietRiotWeeAppController *me = self;
     dispatch_async(dispatch_get_global_queue(0, 0), ^{
         NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
@@ -308,8 +310,20 @@ static int qr_json_int(const char *body, const char *key)
     });
 }
 
+- (void)setPending:(NSString *)txt
+{
+    _pending = YES;
+    if (_status) {
+        _status.text = txt;
+        _status.textColor = [UIColor colorWithWhite:0.82 alpha:1];
+    }
+    if (_startBtn) { _startBtn.enabled = NO; _startBtn.alpha = 0.35f; }
+    if (_stopBtn)  { _stopBtn.enabled = NO;  _stopBtn.alpha = 0.35f; }
+}
+
 - (void)startTapped
 {
+    if (_pending) return;
     char *body = qr_http_get("/status", 700);
     if (body) {
         free(body);
@@ -318,17 +332,26 @@ static int qr_json_int(const char *body, const char *key)
         if (r) free(r);
         qr_alert(live ? @"QuietRiot: streaming"
                       : @"QuietRiot: daemon error (see daemon.log)");
+        [self refreshStatus];
     } else {
+        [self setPending:@"● starting QuietRiot..."];
         pid_t pid = qr_spawn_daemon();
         qr_alert((pid > 0) ? [NSString stringWithFormat:@"Starting QuietRiot (pid %d)...",
                               (int)pid]
                            : @"QuietRiot: spawn failed (see widget.log)");
+        __block QuietRiotWeeAppController *me = self;
+        dispatch_after(
+            dispatch_time(DISPATCH_TIME_NOW, (int64_t)2.5 * NSEC_PER_SEC),
+            dispatch_get_main_queue(), ^{
+                me->_pending = NO;
+                [me refreshStatus];
+            });
     }
-    [self refreshStatus];
 }
 
 - (void)stopTapped
 {
+    if (_pending) return;
     char *body = qr_http_get("/status", 700);
     if (body) {
         free(body);
@@ -339,8 +362,15 @@ static int qr_json_int(const char *body, const char *key)
     int r2 = system("/bin/killall -9 quietriot-ffmpeg 2>/dev/null");
     qr_log([NSString stringWithFormat:@"stop: shutdown+killall (%d/%d)\n",
             r1, r2].UTF8String);
+    [self setPending:@"● stopping QuietRiot..."];
     qr_alert(@"QuietRiot stopped");
-    [self refreshStatus];
+    __block QuietRiotWeeAppController *me = self;
+    dispatch_after(
+        dispatch_time(DISPATCH_TIME_NOW, (int64_t)2.0 * NSEC_PER_SEC),
+        dispatch_get_main_queue(), ^{
+            me->_pending = NO;
+            [me refreshStatus];
+        });
 }
 
 @end
