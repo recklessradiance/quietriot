@@ -91,9 +91,7 @@
 
 - (BOOL)start:(NSError **)err
 {
-    if (_running) return YES;
-
-    _session = [[AVCaptureSession alloc] init];
+    if (_running) return YES;    _session = [[AVCaptureSession alloc] init];
     // Medium preset = 480x360 on the 4s; the sane ceiling for A5 software x264.
     _session.sessionPreset = AVCaptureSessionPresetMedium;
     [[NSNotificationCenter defaultCenter] addObserver:self
@@ -123,7 +121,6 @@
         [NSNumber numberWithUnsignedInt:kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange],
             (id)kCVPixelBufferPixelFormatTypeKey, nil];
     _videoOut.videoSettings = vs;
-    _videoOut.minFrameDuration = CMTimeMake(1, _fps);   // iOS 6-era fps cap
     _videoOut.alwaysDiscardsLateVideoFrames = YES;
     [_videoOut setSampleBufferDelegate:self queue:_videoQueue];
 

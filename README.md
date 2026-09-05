@@ -78,3 +78,25 @@ ssh root@<phone-ip> "quietriotd --port 8080 --camera rear"
 - `ffmpeg` needs `libx264` (GPL); keep the ffmpeg build script's output private.
 - If the A5 can't keep up, drop to 320x240 by changing the session preset in
   `src/CaptureEngine.mm` and rebuilding.
+
+## Device gotchas (learned on the 4s / iOS 6.1.3)
+
+- `launchctl` over non-interactive SSH fails with `launch_msg(): Socket is not
+  connected`. The LaunchDaemon plist still works: it loads on next reboot, or
+  run the daemon directly with nohup (as `tool/deploy.sh` falls back to).
+- iOS 6.1.3 has no `ps`, no `plutil`, no `awk`; use `killall` and
+  `launchctl list`.
+- AVFoundation will NOT deliver sample buffers unless the main CFRunLoop is
+  serviced — `dispatch_main()` alone is not enough. See `main.mm`.
+- `poll()` on fifos never reports POLLOUT here; `qr_fifo_write` uses
+  blocking-with-fcntl-fallback instead (never abandon a frame mid-write —
+  rawvideo reads fixed-size blocks and mid-frame drops desync the stream).
+- x264 without NEON encodes ~1 fps at 480x360. The build script builds NEON
+  asm via `tool/gas-preprocessor.pl` (patched for `.data.rel.ro`); expect
+  realtime 15 fps with it.
+- The theos iPhoneOS10.3.sdk `libobjc.tbd` is trimmed and lacks
+  `_objc_msgSend_stret`; it was patched in place (struct-returning properties
+  like `CMTime` need it). The on-device dylib has it.
+- Legacy iOS 6 OpenSSH only: `ssh-copy-id`/`sshpass` work; OpenSSH 6.7 server.
+- On the Mac, brew's `/usr/local/bin/curl` is a broken foreign-arch binary —
+  always use `/usr/bin/curl`.

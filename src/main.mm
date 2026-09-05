@@ -56,6 +56,7 @@ int main(int argc, char **argv)
     }
 
     @autoreleasepool {
+        if (initialCamera == QRCameraFront) setenv("QR_CAM", "front", 1);
         CaptureEngine *engine = [[CaptureEngine alloc] initWithFps:fps];
         FfmpegProc *proc = [[FfmpegProc alloc] init];
         proc.ffmpegPath = ffbin;
