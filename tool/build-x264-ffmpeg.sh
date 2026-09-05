@@ -13,6 +13,9 @@ PREFIX="$ROOT/tool/prefix"
 JOBS="$(sysctl -n hw.ncpu)"
 
 ARCHFLAGS="-arch $ARCH -miphoneos-version-min=$MINVER -isysroot $SDK"
+# armv7 64/32-bit divide helpers (__divdi3, __divsi3) come from libgcc_s.1,
+# which exists on iOS 6+ at /usr/lib/libgcc_s.1.dylib
+GCCFIX="-lgcc_s.1"
 
 say() { printf '\n\033[1;36m==> %s\033[0m\n' "$*"; }
 
@@ -22,6 +25,9 @@ mkdir -p "$PREFIX"
 export PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig"
 
 # ---------------------------------------------------------------- x264
+if [ -f "$PREFIX/lib/libx264.a" ] && [ "${REBUILD_X264:-0}" != "1" ]; then
+    say "x264 already built: $PREFIX/lib/libx264.a"
+else
 say "building x264 (armv7, static)"
 cd "$ROOT/vendor/x264"
 ( make distclean >/dev/null 2>&1 || true )
@@ -65,6 +71,7 @@ if ! make -j"$JOBS" > "$ROOT/tool/x264-build.log" 2>&1; then
     fi
 fi
 make install > "$ROOT/tool/x264-install.log" 2>&1
+fi
 say "x264 installed: $(ls -la "$PREFIX/lib/libx264.a" 2>/dev/null || echo MISSING)"
 
 # ---------------------------------------------------------------- ffmpeg
@@ -76,7 +83,7 @@ cd "$ROOT/vendor/ffmpeg-4.4.1"
     --enable-cross-compile --target-os=darwin --arch=arm --cpu=armv7 \
     --cc="$CC" \
     --extra-cflags="$ARCHFLAGS -O2 -Wno-implicit-function-declaration" \
-    --extra-ldflags="$ARCHFLAGS" \
+    --extra-ldflags="$ARCHFLAGS $GCCFIX" \
     --prefix="$PREFIX" \
     --enable-gpl --enable-libx264 \
     --enable-static --disable-shared \
@@ -86,6 +93,7 @@ cd "$ROOT/vendor/ffmpeg-4.4.1"
     --disable-iconv --disable-bzlib --disable-lzma --disable-zlib \
     --disable-sdl2 --disable-xlib --disable-libxcb \
     --disable-vaapi --disable-vdpau --disable-vulkan --disable-opencl \
+    --disable-videotoolbox \
     --enable-pthreads \
     > "$ROOT/tool/ffmpeg-configure.log" 2>&1 || {
         tail -30 "$ROOT/tool/ffmpeg-configure.log" >&2
