@@ -13,6 +13,8 @@
 
 extern char **environ;
 
+volatile pid_t qr_ffmpeg_pid = 0;
+
 #define QR_LOG(...) fprintf(stderr, "[ffmpeg] " __VA_ARGS__)
 
 @implementation FfmpegProc {
@@ -121,7 +123,7 @@ extern char **environ;
         return NO;
     }
 
-    char vsize[32], fpsArg[16], rateArg[16], chArg[8], vb[32], mr[32], bs[32], ab[32];
+    char vsize[32], fpsArg[16], rateArg[16], chArg[8], vb[32], mr[32], bs[32], ab[32], gain[32];
     snprintf(vsize, sizeof(vsize), "%dx%d", _w, _h);
     snprintf(fpsArg, sizeof(fpsArg), "%d", _fps);
     snprintf(rateArg, sizeof(rateArg), "%d", _rate);
@@ -130,6 +132,7 @@ extern char **environ;
     snprintf(mr, sizeof(mr), "%dk", _videoBitrate * 12 / 10);
     snprintf(bs, sizeof(bs), "%dk", _videoBitrate * 2);
     snprintf(ab, sizeof(ab), "%dk", _audioBitrate);
+    snprintf(gain, sizeof(gain), "volume=%ddB", _audioGain);
 
     const char *argv[96];
     int i = 0;
@@ -137,11 +140,13 @@ extern char **environ;
     argv[i++] = "-y";
     argv[i++] = "-nostdin";
     argv[i++] = "-loglevel"; argv[i++] = "warning";
+    argv[i++] = "-thread_queue_size"; argv[i++] = "64";
     argv[i++] = "-f"; argv[i++] = "rawvideo";
     argv[i++] = "-pix_fmt"; argv[i++] = "nv12";
     argv[i++] = "-video_size"; argv[i++] = vsize;
     argv[i++] = "-framerate"; argv[i++] = fpsArg;
     argv[i++] = "-i"; argv[i++] = fifoV;
+    argv[i++] = "-thread_queue_size"; argv[i++] = "64";
     argv[i++] = "-f"; argv[i++] = "s16le";
     argv[i++] = "-ar"; argv[i++] = rateArg;
     argv[i++] = "-ac"; argv[i++] = chArg;
@@ -155,13 +160,14 @@ extern char **environ;
     argv[i++] = "-b:v"; argv[i++] = vb;
     argv[i++] = "-maxrate"; argv[i++] = mr;
     argv[i++] = "-bufsize"; argv[i++] = bs;
-    argv[i++] = "-g"; argv[i++] = "30";
-    argv[i++] = "-keyint_min"; argv[i++] = "15";
+    argv[i++] = "-g"; argv[i++] = fpsArg;      // 1s GOP @ fps -> ~1s HLS segments
+    argv[i++] = "-keyint_min"; argv[i++] = fpsArg;
     argv[i++] = "-sc_threshold"; argv[i++] = "0";
     argv[i++] = "-threads"; argv[i++] = "2";
     argv[i++] = "-r"; argv[i++] = fpsArg;
     argv[i++] = "-c:a"; argv[i++] = "aac";
     argv[i++] = "-b:a"; argv[i++] = ab;
+    argv[i++] = "-af"; argv[i++] = gain;       // mic is quiet on the 4s
     argv[i++] = "-f"; argv[i++] = "hls";
     argv[i++] = "-hls_time"; argv[i++] = "1";
     argv[i++] = "-hls_list_size"; argv[i++] = "3";
@@ -203,6 +209,7 @@ extern char **environ;
         return NO;
     }
     _pid = pid;
+    qr_ffmpeg_pid = pid;
     _startedOnce = YES;
     [self ensureMonitor];
     QR_LOG("spawned pid %d (%dx%d@%d, %dHz/%dch, %dkbps v / %dkbps a)\n",
@@ -229,6 +236,7 @@ extern char **environ;
     if (r == _pid) {
         QR_LOG("ffmpeg pid %d exited (status %d), restarts=%d\n", (int)_pid, st, _restarts);
         _pid = -1;
+        qr_ffmpeg_pid = 0;
         if (++_restarts > 10) {
             QR_LOG("too many ffmpeg restarts, giving up\n");
             return;
@@ -301,6 +309,7 @@ extern char **environ;
         if (kill(_pid, 0) == 0) kill(_pid, SIGKILL);
         waitpid(_pid, &st, 0);
         _pid = -1;
+        qr_ffmpeg_pid = 0;
     }
     qr_fifo_close(&_vFifo);
     qr_fifo_close(&_aFifo);

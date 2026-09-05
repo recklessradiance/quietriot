@@ -73,13 +73,14 @@ sleep 2
 say "smoke test (from Mac)"
 /usr/bin/curl -m 5 -s "http://$IP:8080/status" || echo "(status not reachable yet)"
 echo
-/usr/bin/curl -m 5 -s "http://$IP:8080/toggle" || true
-sleep 2
-/usr/bin/curl -m 5 -s "http://$IP:8080/toggle" || true
-echo
+/usr/bin/curl -m 5 -s "http://$IP:8080/hls/stream.m3u8" | head -3 || true
+
+say "stopping daemon (gestures control it now; not always-on)"
+$SSH "killall quietriotd 2>/dev/null; killall quietriot-ffmpeg 2>/dev/null; sleep 1; \
+      rm -f $WORK/video.fifo $WORK/audio.fifo" || true
 
 say "installing tweak -> respring"
 $SSH "killall SpringBoard" || true
 
 say "done"
-say "open http://$IP:8080/ to watch; assign gestures in Activator -> QuietRiot"
+say "start watching with the Activator gesture (QuietRiot -> assign any), or: ssh + nohup"

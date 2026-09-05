@@ -16,6 +16,11 @@
 @property (nonatomic, assign) int videoBitrate;     // kbit/s, default 400
 @property (nonatomic, assign) int audioBitrate;     // kbit/s, default 64
 @property (nonatomic, assign) int fps;              // default 15
+@property (nonatomic, assign) int audioGain;        // dB boost, default 12 (4s mic is quiet)
+
+// ffmpeg child pid (0 when not running); used by the SIGTERM handler so the
+// orphan encoder never outlives the daemon.
+extern volatile pid_t qr_ffmpeg_pid;
 
 - (BOOL)startWithVideoWidth:(int)w height:(int)h
                   audioRate:(int)rate channels:(int)ch isFloat:(BOOL)isFloat

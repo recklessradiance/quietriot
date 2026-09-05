@@ -11,9 +11,14 @@
 
 #define QR_LOG(...) fprintf(stderr, "[main] " __VA_ARGS__)
 
+// set by FfmpegProc; kill the encoder on TERM so it never outlives us
+extern volatile pid_t qr_ffmpeg_pid;
+
 static void qr_terminate(int sig)
 {
     (void)sig;
+    pid_t p = qr_ffmpeg_pid;
+    if (p > 0) kill(p, SIGKILL);
     _exit(0);
 }
 
@@ -23,7 +28,7 @@ static void usage(void)
         "quietriotd - live camera/mic HLS streamer for jailbroken iOS 6.1.3\n"
         "usage: quietriotd [--port N] [--camera rear|front] [--fps N]\n"
         "                  [--workdir PATH] [--ffmpeg PATH] [--logfile PATH]\n"
-        "                  [--video-bitrate K] [--audio-bitrate K]\n");
+        "                  [--video-bitrate K] [--audio-bitrate K] [--audio-gain DB]\n");
 }
 
 int main(int argc, char **argv)
@@ -35,7 +40,7 @@ int main(int argc, char **argv)
     sigaction(SIGINT, &sa, NULL);
     sigaction(SIGTERM, &sa, NULL);
 
-    int port = 8080, fps = 15, vb = 400, ab = 64;
+    int port = 8080, fps = 15, vb = 400, ab = 64, ag = 12;
     QRCamera initialCamera = QRCameraRear;
     NSString *workdir = @"/var/mobile/Library/quietriot";
     NSString *ffbin = @"/usr/local/bin/quietriot-ffmpeg";
@@ -55,6 +60,7 @@ int main(int argc, char **argv)
             logfile = [NSString stringWithUTF8String:argv[++i]];
         else if (strcmp(a, "--video-bitrate") == 0 && i + 1 < argc) vb = atoi(argv[++i]);
         else if (strcmp(a, "--audio-bitrate") == 0 && i + 1 < argc) ab = atoi(argv[++i]);
+        else if (strcmp(a, "--audio-gain") == 0 && i + 1 < argc) ag = atoi(argv[++i]);
         else { usage(); return 1; }
     }
 
@@ -72,6 +78,7 @@ int main(int argc, char **argv)
         proc.workDir = workdir;
         proc.videoBitrate = vb;
         proc.audioBitrate = ab;
+        proc.audioGain = ag;
         proc.fps = fps;
 
         engine.delegate = proc;

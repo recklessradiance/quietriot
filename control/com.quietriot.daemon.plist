@@ -14,10 +14,11 @@
 		<string>--logfile</string>
 		<string>/var/mobile/Library/quietriot/daemon.log</string>
 	</array>
+	<!-- disabled by design: gestures (Activator) start/stop the daemon
+	     process. To restore boot autostart, set RunAtLoad to true, add
+	     <key>KeepAlive</key><true/>, then: launchctl load this file. -->
 	<key>RunAtLoad</key>
-	<true/>
-	<key>KeepAlive</key>
-	<true/>
+	<false/>
 	<key>StandardOutPath</key>
 	<string>/var/log/quietriotd.log</string>
 	<key>StandardErrorPath</key>

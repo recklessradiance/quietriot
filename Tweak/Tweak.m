@@ -103,34 +103,60 @@ static void qr_spawn_daemon(void)
     posix_spawn(&pid, "/bin/sh", NULL, NULL, argv, environ);
 }
 
+#define QR_WORKDIR "/var/mobile/Library/quietriot"
+
+static BOOL qr_daemon_running(void)
+{
+    char *body = qr_http_get("/status");
+    if (body) {
+        free(body);
+        return YES;
+    }
+    return NO;
+}
+
+// gestures control the daemon PROCESS, not just the stream: kill the daemon
+// (its TERM handler kills the encoder too), then sweep for strays + fifos.
+static void qr_stop_process(void)
+{
+    system("/bin/killall quietriotd 2>/dev/null");
+    system("/bin/killall quietriot-ffmpeg 2>/dev/null");
+    system("/bin/rm -f " QR_WORKDIR "/video.fifo " QR_WORKDIR "/audio.fifo");
+}
+
+static void qr_start_or_alert(BOOL running)
+{
+    if (running) {
+        qr_alert(@"QuietRiot already running");
+        return;
+    }
+    qr_spawn_daemon();   // daemon starts streaming immediately (default camera)
+    qr_alert(@"Starting QuietRiot...");
+}
+
 static void qr_toggle(int mode)
 {
     NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
 
-    const char *path = (mode == QR_MODE_START) ? "/start"
-                     : (mode == QR_MODE_STOP)  ? "/stop" : "/toggle";
-    char *body = qr_http_get(path);
-    if (body) {
-        BOOL on = strstr(body, "\"streaming\":true") != NULL;
-        BOOL ok = strstr(body, "\"ok\":true") != NULL;
-        free(body);
-        if (ok) {
-            qr_alert(on ? @"Streaming ON" : @"Streaming OFF");
-        } else {
-            qr_alert(@"Daemon error (see daemon.log)");
-        }
-        [pool drain];
-        return;
-    }
+    BOOL running = qr_daemon_running();
 
-    if (mode == QR_MODE_STOP) {
-        qr_alert(@"Daemon not running");
-        [pool drain];
-        return;
+    if (mode == QR_MODE_START) {
+        qr_start_or_alert(running);
+    } else if (mode == QR_MODE_STOP) {
+        if (running) {
+            qr_stop_process();
+            qr_alert(@"QuietRiot stopped");
+        } else {
+            qr_alert(@"QuietRiot not running");
+        }
+    } else {
+        if (running) {
+            qr_stop_process();
+            qr_alert(@"QuietRiot stopped");
+        } else {
+            qr_start_or_alert(NO);
+        }
     }
-    // daemon down: spawn it; it auto-starts streaming with the default camera
-    qr_spawn_daemon();
-    qr_alert(@"Starting QuietRiot daemon...");
     [pool drain];
 }
 
@@ -178,7 +204,7 @@ static void qr_toggle(int mode)
 
 + (NSString *)activator:(id)activator requiresLocalizedDescriptionForListenerName:(NSString *)name
 {
-    return @"Start/stop the quietriot camera + mic HLS stream";
+    return @"Start/stop the quietriot daemon process (camera + mic HLS stream)";
 }
 
 + (NSString *)activator:(id)activator requiresLocalizedGroupNameForListenerName:(NSString *)name

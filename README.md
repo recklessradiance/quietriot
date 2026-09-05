@@ -65,22 +65,33 @@ ssh root@<phone-ip> "quietriotd --port 8080 --camera rear --logfile /var/mobile/
 
 ## Start/stop from the phone (Activator)
 
-The `quietriotctl` tweak (source: `Tweak/Tweak.m`, built by
-`tool/build-tweak.sh`, loaded into SpringBoard only) registers three Activator
-actions after a respring: **QuietRiot: Toggle / Start / Stop stream**. Assign
-them to any gesture in the Activator settings app.
+The daemon is NOT always running: the `quietriotctl` tweak (source:
+`Tweak/Tweak.m`, built by `tool/build-tweak.sh`, loaded into SpringBoard only)
+registers three Activator actions after a respring: **QuietRiot: Toggle /
+Start / Stop stream**. Assign them to any gesture in the Activator settings
+app. These control the daemon *process* itself:
 
-- The tweak is privilege-free: it just `GET`s `http://127.0.0.1:8080/toggle`
-  (plus `/start`, `/stop`) on localhost.
-- If the daemon is not running, the toggle/start actions spawn it as the
-  mobile user (all daemon state lives under `/var/mobile/Library/quietriot`,
-  and iOS 6 has no camera TCC prompts), so gestures work even with the daemon
-  dead.
-- Feedback: a small alert shows `Streaming ON/OFF`.
-- The web page has the same Start/Stop button (`/toggle`), and `/status`
-  reports a `streaming` flag.
+- **Start**: if the daemon is down, the tweak spawns it as the mobile user
+  (`/var/mobile/Library/quietriot` state, no TCC prompts on iOS 6) — it starts
+  streaming immediately with the default camera.
+- **Stop**: kills `quietriotd` (its SIGTERM handler kills the ffmpeg encoder
+  too) and removes the fifos.
+- **Toggle**: start if down, stop if up.
+
+The tweak is privilege-free: it probes `http://127.0.0.1:8080/status` on
+localhost and uses `killall` for the stop path. Feedback: a small alert
+("Starting QuietRiot..." / "QuietRiot stopped" / "not running").
+
+The launchd plist is installed with `RunAtLoad=false` (no KeepAlive), so the
+daemon does not autostart at boot. To restore autostart: set `RunAtLoad` to
+true, add `<key>KeepAlive</key><true/>`, then `launchctl load
+/Library/LaunchDaemons/com.quietriot.daemon.plist`.
+
+- The web page has the same Start/Stop button (`/toggle`) — that one toggles
+  *streaming* inside the running daemon (camera off, ffmpeg killed, no
+  process restart needed); `/status` reports a `streaming` flag.
 - Note: `deploy.sh`/root `killall` can stop even a SpringBoard-spawned (mobile)
-  daemon; after a reboot the launchd plist starts the root instance again.
+  daemon.
 
 ## Flags
 
@@ -93,7 +104,11 @@ them to any gesture in the Activator settings app.
 --logfile PATH    redirect daemon stdout/stderr to this file
 --video-bitrate K default 400
 --audio-bitrate K default 64
+--audio-gain DB   mic boost in dB, default 12 (the 4s mic is very quiet)
 ```
+
+Latency notes: x264 GOP = 1s (`-g = fps`) and HLS segments cut at ~1s
+(`hls_time 1`, list size 3) → ~3-4s glass-to-glass on iOS 6 Safari.
 
 ## Notes
 

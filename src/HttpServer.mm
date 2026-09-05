@@ -426,7 +426,9 @@ static void *qr_conn_thread(void *arg)
 {
     // ctx is the raw fd; the HttpServer singleton is shared via a static ref
     extern HttpServer *qr_shared_server;
+    NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
     if (qr_shared_server) [qr_shared_server handleConn:(int)(intptr_t)arg];
+    [pool drain];
     close((int)(intptr_t)arg);
     return NULL;
 }
