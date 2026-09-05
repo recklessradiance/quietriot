@@ -68,12 +68,27 @@ extern char **environ;
 
 - (BOOL)spawnWithParams:(NSError **)err
 {
-    if (![_workDir length]) return NO;
-    if (![self prepareDirs:err]) return NO;
+    NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
+    if (![_workDir length]) { [pool drain]; return NO; }
+    if (![self prepareDirs:err]) { [pool drain]; return NO; }
 
-    const char *ff = [_ffmpegPath fileSystemRepresentation];
-    const char *fifoV = [[_workDir stringByAppendingPathComponent:@"video.fifo"] fileSystemRepresentation];
-    const char *fifoA = [[_workDir stringByAppendingPathComponent:@"audio.fifo"] fileSystemRepresentation];
+    char ffPath[PATH_MAX], fifoVPath[PATH_MAX], fifoAPath[PATH_MAX];
+    char segPath[PATH_MAX], plPath[PATH_MAX], lgPath[PATH_MAX];
+    snprintf(ffPath, sizeof(ffPath), "%s", [_ffmpegPath fileSystemRepresentation]);
+    snprintf(fifoVPath, sizeof(fifoVPath), "%s",
+             [[_workDir stringByAppendingPathComponent:@"video.fifo"] fileSystemRepresentation]);
+    snprintf(fifoAPath, sizeof(fifoAPath), "%s",
+             [[_workDir stringByAppendingPathComponent:@"audio.fifo"] fileSystemRepresentation]);
+    snprintf(segPath, sizeof(segPath), "%s",
+             [[_workDir stringByAppendingPathComponent:@"hls/seg%05d.ts"] fileSystemRepresentation]);
+    snprintf(plPath, sizeof(plPath), "%s",
+             [[_workDir stringByAppendingPathComponent:@"hls/stream.m3u8"] fileSystemRepresentation]);
+    snprintf(lgPath, sizeof(lgPath), "%s",
+             [[_workDir stringByAppendingPathComponent:@"ffmpeg.log"] fileSystemRepresentation]);
+
+    const char *ff = ffPath;
+    const char *fifoV = fifoVPath;
+    const char *fifoA = fifoAPath;
 
     if (_vFifo.fd < 0 && !qr_fifo_open(&_vFifo, fifoV)) {
         if (err) *err = [NSError errorWithDomain:@"quietriot" code:4
@@ -98,11 +113,7 @@ extern char **environ;
     snprintf(bs, sizeof(bs), "%dk", _videoBitrate * 2);
     snprintf(ab, sizeof(ab), "%dk", _audioBitrate);
 
-    NSString *seg = [_workDir stringByAppendingPathComponent:@"hls/seg%05d.ts"];
-    NSString *pl  = [_workDir stringByAppendingPathComponent:@"hls/stream.m3u8"];
-    NSString *lg  = [_workDir stringByAppendingPathComponent:@"ffmpeg.log"];
-
-    const char *argv[64];
+    const char *argv[96];
     int i = 0;
     argv[i++] = ff;
     argv[i++] = "-y";
@@ -137,8 +148,8 @@ extern char **environ;
     argv[i++] = "-hls_time"; argv[i++] = "1";
     argv[i++] = "-hls_list_size"; argv[i++] = "3";
     argv[i++] = "-hls_flags"; argv[i++] = "delete_segments";
-    argv[i++] = "-hls_segment_filename"; argv[i++] = [seg fileSystemRepresentation];
-    argv[i++] = [pl fileSystemRepresentation];
+    argv[i++] = "-hls_segment_filename"; argv[i++] = segPath;
+    argv[i++] = plPath;
     argv[i++] = NULL;
 
     if (access(ff, X_OK) != 0) {
@@ -151,7 +162,7 @@ extern char **environ;
 
     posix_spawn_file_actions_t fa;
     posix_spawn_file_actions_init(&fa);
-    int logfd = open([lg fileSystemRepresentation], O_WRONLY | O_CREAT | O_APPEND, 0644);
+    int logfd = open(lgPath, O_WRONLY | O_CREAT | O_APPEND, 0644);
     if (logfd >= 0) {
         posix_spawn_file_actions_adddup2(&fa, logfd, STDOUT_FILENO);
         posix_spawn_file_actions_adddup2(&fa, logfd, STDERR_FILENO);
@@ -176,6 +187,7 @@ extern char **environ;
     _startedOnce = YES;
     QR_LOG("spawned pid %d (%dx%d@%d, %dHz/%dch, %dkbps v / %dkbps a)\n",
            (int)_pid, _w, _h, _fps, _rate, _ch, _videoBitrate, _audioBitrate);
+    [pool drain];
     return YES;
 }
 
@@ -190,7 +202,9 @@ extern char **environ;
         dispatch_source_set_timer(_monitor, DISPATCH_TIME_NOW,
                                   2.0 * NSEC_PER_SEC, 1.0 * NSEC_PER_SEC);
         dispatch_source_set_event_handler(_monitor, ^{
+            NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
             [self checkProcess];
+            [pool drain];
         });
         dispatch_resume(_monitor);
     }
@@ -244,10 +258,12 @@ extern char **environ;
 - (void)tryStart
 {
     if (_pendW > 0 && _pendRate > 0 && _pid <= 0 && !_startedOnce) {
+        NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
         NSError *e = nil;
         _w = _pendW; _h = _pendH; _rate = _pendRate; _ch = _pendCh;
         if (![self spawnWithParams:&e])
             QR_LOG("failed to start ffmpeg: %s\n", e ? e.localizedDescription.UTF8String : "?");
+        [pool drain];
     }
 }
 

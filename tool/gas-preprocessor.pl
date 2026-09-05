@@ -121,6 +121,8 @@ while (<ASMFILE>) {
     s/\.global/.globl/x;
     # also catch .section .rodata since the equivalent to .const_data is .section __DATA,__const
     s/(.*)\.rodata/.const_data/x;
+    # GNU .data.rel.ro (relocated-then-RO data) -> Mach-O __DATA,__const
+    s/(.*)\.data\.rel\.ro/.const_data/x;
     s/\.int/.long/x;
     s/\.float/.single/x;
 

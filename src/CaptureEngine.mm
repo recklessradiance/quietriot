@@ -96,9 +96,25 @@
     _session = [[AVCaptureSession alloc] init];
     // Medium preset = 480x360 on the 4s; the sane ceiling for A5 software x264.
     _session.sessionPreset = AVCaptureSessionPresetMedium;
+    [[NSNotificationCenter defaultCenter] addObserver:self
+        selector:@selector(sessionRuntimeError:)
+        name:AVCaptureSessionRuntimeErrorNotification object:_session];
 
-    _videoInputRear = [self makeVideoInput:AVCaptureDevicePositionBack error:err];
-    if (_videoInputRear == nil) return NO;
+    AVCaptureDevicePosition pos = AVCaptureDevicePositionBack;
+    if (getenv("QR_CAM") && strcmp(getenv("QR_CAM"), "front") == 0)
+        pos = AVCaptureDevicePositionFront;
+    AVCaptureDevice *dev = nil;
+    NSArray *vids = [AVCaptureDevice devicesWithMediaType:AVMediaTypeVideo];
+    for (AVCaptureDevice *d in vids) {
+        QR_LOG("camera candidate: %s pos=%ld connected=%d modelID=%s\n",
+               d.uniqueID.UTF8String ?: "?", (long)d.position,
+               d.connected ? 1 : 0, d.modelID.UTF8String ?: "?");
+        if (dev == nil || d.position == pos) dev = d;
+    }
+    if (dev == nil) dev = [AVCaptureDevice defaultDeviceWithMediaType:AVMediaTypeVideo];
+    AVCaptureDeviceInput *in = [AVCaptureDeviceInput deviceInputWithDevice:dev error:err];
+    if (pos == AVCaptureDevicePositionFront) _videoInputFront = in; else _videoInputRear = in;
+    if (in == nil) return NO;
     _audioInput = [AVCaptureDeviceInput deviceInputWithDevice:
         [AVCaptureDevice defaultDeviceWithMediaType:AVMediaTypeAudio] error:err];
 
@@ -116,25 +132,31 @@
 
     [_session beginConfiguration];
     [_session addInput:_videoInputRear];
-    if (_audioInput) [_session addInput:_audioInput];
+    if (!getenv("QR_NO_AUDIO")) {
+        if (_audioInput) [_session addInput:_audioInput];
+        [_session addOutput:_audioOut];
+    }
     [_session addOutput:_videoOut];
-    [_session addOutput:_audioOut];
     [_session commitConfiguration];
+    QR_LOG("session wiring done: videoConns=%lu audioConns=%lu\n",
+           (unsigned long)[_videoOut.connections count],
+           (unsigned long)[_audioOut.connections count]);
     _camera = QRCameraRear;
 
     [self applyOrientation];
 
     AVAudioSession *as = [AVAudioSession sharedInstance];
     [as setCategory:AVAudioSessionCategoryRecord error:nil];
-    [as setActive:YES error:nil];
+    if (!getenv("QR_NO_AUDIO")) [as setActive:YES error:nil];
 
     _running = YES;
     AVCaptureSession *s = _session;
-    QRCamera cam = _camera;
     dispatch_async(_configQueue, ^{
+        NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
         [s startRunning];
-        QR_LOG("session running (camera=%s, preset=Medium, fps<=%d)\n",
-               cam == QRCameraRear ? "rear" : "front", self->_fps);
+        QR_LOG("startRunning done: running=%d hasVideoConn=%d\n",
+               s.running ? 1 : 0, [self videoConnection] != nil ? 1 : 0);
+        [pool drain];
     });
     return YES;
 }
@@ -150,9 +172,28 @@
 - (void)applyOrientation
 {
     AVCaptureConnection *conn = [self videoConnection];
-    if (conn == nil) return;
-    if (conn.supportsVideoOrientation)
-        conn.videoOrientation = AVCaptureVideoOrientationPortrait;
+    if (conn == nil) {
+        QR_LOG("orientation: no video connection yet\n");
+        return;
+    }
+    if (!getenv("QR_NO_ORIENT")) {
+        if (conn.supportsVideoOrientation) {
+            conn.videoOrientation = AVCaptureVideoOrientationPortrait;
+            QR_LOG("orientation set portrait (supports=%d)\n",
+                   conn.supportsVideoOrientation ? 1 : 0);
+        }
+    } else {
+        QR_LOG("orientation SKIPPED (QR_NO_ORIENT)\n");
+    }
+    // iOS 6: fps cap lives on the connection, not the data output
+    if (!getenv("QR_NO_FPS")) {
+        if (conn.supportsVideoMinFrameDuration)
+            conn.videoMinFrameDuration = CMTimeMake(1, _fps);
+    }
+    QR_LOG("conn state: enabled=%d orientation=%ld minFps=%d/%d supported minFps=%d\n",
+           conn.enabled ? 1 : 0, (long)conn.videoOrientation,
+           (int)CMTimeGetSeconds(conn.videoMinFrameDuration),
+           _fps, conn.supportsVideoMinFrameDuration ? 1 : 0);
 }
 
 - (void)stop
@@ -366,16 +407,24 @@
         [d writeAudioStream:buf length:len];
 }
 
+- (void)sessionRuntimeError:(NSNotification *)n
+{
+    NSError *e = [n.userInfo objectForKey:AVCaptureSessionErrorKey];
+    QR_LOG("SESSION RUNTIME ERROR: %s\n", e.description.UTF8String ?: "?");
+}
+
 #pragma mark - AVCapture sample buffer delegates
 
 - (void)captureOutput:(AVCaptureOutput *)output
 didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
        fromConnection:(AVCaptureConnection *)connection
 {
+    NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
     if (output == _videoOut)
         [self handleVideoBuffer:sampleBuffer];
     else
         [self handleAudioBuffer:sampleBuffer];
+    [pool drain];
 }
 
 - (void)captureOutput:(AVCaptureOutput *)output

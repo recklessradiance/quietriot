@@ -46,8 +46,7 @@ $SCP "$ROOT/web/index.html" root@$IP:/var/mobile/Library/quietriot/web/index.htm
 $SCP "$ROOT/control/com.quietriot.daemon.plist" root@$IP:/Library/LaunchDaemons/com.quietriot.daemon.plist
 $SSH "chown root:wheel /usr/local/bin/quietriotd /usr/local/bin/quietriot-ffmpeg && \
       chmod 755 /usr/local/bin/quietriotd /usr/local/bin/quietriot-ffmpeg && \
-      chown root:wheel /Library/LaunchDaemons/com.quietriot.daemon.plist && \
-      plutil -lint /Library/LaunchDaemons/com.quietriot.daemon.plist"
+      chown root:wheel /Library/LaunchDaemons/com.quietriot.daemon.plist"
 
 say "(re)starting daemon"
 $SSH "launchctl unload /Library/LaunchDaemons/com.quietriot.daemon.plist 2>/dev/null; \
@@ -56,6 +55,6 @@ $SSH "launchctl unload /Library/LaunchDaemons/com.quietriot.daemon.plist 2>/dev/
 
 sleep 2
 say "status"
-$SSH "ps aux | grep -E 'quietriotd|quietriot-ffmpeg' | grep -v grep || true; \
+$SSH "launchctl list | grep quietriot || true; \
       tail -n 8 /var/log/quietriotd.log 2>/dev/null || true"
 say "open http://$IP:8080/ to watch"

@@ -90,7 +90,14 @@ int main(int argc, char **argv)
 
         QR_LOG("quietriotd up on http://0.0.0.0:%d/  (camera=%s, stream=/hls/stream.m3u8)\n",
                port, initialCamera == QRCameraFront ? "front" : "rear");
-        dispatch_main();   // never returns
+        // AVFoundation needs the main CFRunLoop serviced (dispatch_main()
+        // alone never drains it -> no sample buffers, no notifications).
+        NSRunLoop *rl = [NSRunLoop mainRunLoop];
+        while (1) {
+            @autoreleasepool {
+                [rl runMode:NSDefaultRunLoopMode beforeDate:[NSDate distantFuture]];
+            }
+        }
     }
     return 0;
 }

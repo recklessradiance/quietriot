@@ -26,26 +26,44 @@ long qr_fifo_write(QRFifo *f, const void *buf, unsigned long len)
         return -1;
     const char *p = (const char *)buf;
     unsigned long done = 0;
+    int blocked = 0;
     while (done < len) {
         ssize_t n = write(f->fd, p + done, len - done);
         if (n > 0) {
             done += (unsigned long)n;
             continue;
         }
+        if (n < 0 && errno == EINTR)
+            continue;
         if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
             if (done == 0) {
+                // nothing of this frame in the pipe yet: cheap drop, capture
+                // keeps flowing while ffmpeg is absent/slow
                 f->drops++;
                 return -1;
             }
-            // partial write then full pipe: rare for our chunk sizes; treat as drop
-            f->drops++;
-            return -1;
-        }
-        if (n < 0 && errno == EINTR)
+            // mid-frame: MUST finish (rawvideo reads fixed-size blocks).
+            // Don't poll-wait: iOS 6 fifos appear not to wake poll() on
+            // writability. A blocking write sleeps on the pipe condition
+            // and wakes immediately when the reader drains space.
+            if (!blocked) {
+                int fl = fcntl(f->fd, F_GETFL);
+                fcntl(f->fd, F_SETFL, fl & ~O_NONBLOCK);
+                blocked = 1;
+            }
             continue;
-        // real error
+        }
+        if (blocked) {
+            int fl = fcntl(f->fd, F_GETFL);
+            fcntl(f->fd, F_SETFL, fl | O_NONBLOCK);
+        }
+        // real error (EPIPE etc.)
         f->drops++;
         return -1;
+    }
+    if (blocked) {
+        int fl = fcntl(f->fd, F_GETFL);
+        fcntl(f->fd, F_SETFL, fl | O_NONBLOCK);
     }
     return (long)len;
 }

@@ -32,45 +32,54 @@ say "building x264 (armv7, static)"
 cd "$ROOT/vendor/x264"
 ( make distclean >/dev/null 2>&1 || true )
 
-X264_ASMDIS=""
-if ! CC="$CC" \
-     CFLAGS="$ARCHFLAGS -O2 -Wno-implicit-function-declaration" \
-     LDFLAGS="$ARCHFLAGS" \
-     ./configure --host=arm-apple-darwin \
-                 --prefix="$PREFIX" \
-                 --enable-static --disable-cli --disable-opencl \
-                 > "$ROOT/tool/x264-configure.log" 2>&1; then
-    say "x264 configure/asm failed; retrying with --disable-asm"
-    ( make distclean >/dev/null 2>&1 || true )
-    X264_ASMDIS="--disable-asm"
-    CC="$CC" \
-    CFLAGS="$ARCHFLAGS -O2 -Wno-implicit-function-declaration" \
-    LDFLAGS="$ARCHFLAGS" \
-    ./configure --host=arm-apple-darwin \
-                --prefix="$PREFIX" \
-                --enable-static --disable-cli --disable-opencl $X264_ASMDIS \
-                > "$ROOT/tool/x264-configure.log" 2>&1
-fi
-tail -5 "$ROOT/tool/x264-configure.log"
+X264_DONE=0
+# NEON: the A5 is a Cortex-A9; x264 NEON asm is ~8-10x faster than C.
+# Apple clang can't assemble GNU-as syntax -> route .S files through
+# gas-preprocessor.pl which translates them for clang's integrated as.
+GASWRAP="$ROOT/tool/gas-x264-wrap.sh"
+cat > "$GASWRAP" <<'EOF'
+#!/bin/bash
+# gas-preprocessor scans the command line for "-arch arm..." to pick the
+# comment char; inject it since x264's ASFLAGS don't carry it.
+exec perl /Users/rcred/Documents/Projects/quietriot/tool/gas-preprocessor.pl \
+    /usr/bin/clang -arch armv7 -miphoneos-version-min=6.1.3 "$@"
+EOF
+chmod +x "$GASWRAP"
 
-if ! make -j"$JOBS" > "$ROOT/tool/x264-build.log" 2>&1; then
-    if [ -z "$X264_ASMDIS" ]; then
-        say "x264 asm build failed; retrying full build with --disable-asm"
-        ( make distclean >/dev/null 2>&1 || true )
-        CC="$CC" \
-        CFLAGS="$ARCHFLAGS -O2 -Wno-implicit-function-declaration" \
-        LDFLAGS="$ARCHFLAGS" \
-        ./configure --host=arm-apple-darwin \
-                    --prefix="$PREFIX" \
-                    --enable-static --disable-cli --disable-opencl --disable-asm \
-                    > "$ROOT/tool/x264-configure.log" 2>&1
-        make -j"$JOBS" > "$ROOT/tool/x264-build.log" 2>&1
-    else
-        tail -30 "$ROOT/tool/x264-build.log" >&2
-        exit 1
+NEONFLAGS="-mfpu=neon -mcpu=cortex-a9"
+# modern clang errors on old x264's asm fn-pointer assignments
+WARNOFF="-Wno-incompatible-function-pointer-types"
+for CFG in 0 1 2; do
+    ( make distclean >/dev/null 2>&1 || true )
+    AS_VAL=""
+    EXTRA_CFLAGS="$WARNOFF"
+    XCONF=""
+    case $CFG in
+        0) AS_VAL="$GASWRAP"; EXTRA_CFLAGS="$WARNOFF $NEONFLAGS";;
+        1) AS_VAL="$GASWRAP";;
+        2) XCONF="--disable-asm";;
+    esac
+    say "x264 attempt $CFG (asm flags: ${EXTRA_CFLAGS:-none})"
+    if CC="$CC" AS="$AS_VAL" \
+         CFLAGS="$ARCHFLAGS -O2 -Wno-implicit-function-declaration $EXTRA_CFLAGS" \
+         LDFLAGS="$ARCHFLAGS" \
+         ./configure --host=arm-apple-darwin \
+                     --prefix="$PREFIX" \
+                     --enable-static --disable-cli --disable-opencl $XCONF \
+                     > "$ROOT/tool/x264-configure.log" 2>&1 \
+       && make -j"$JOBS" > "$ROOT/tool/x264-build.log" 2>&1 \
+       && make install > "$ROOT/tool/x264-install.log" 2>&1; then
+        say "x264 built OK with config $CFG"
+        X264_DONE=1
+        break
     fi
+    tail -8 "$ROOT/tool/x264-configure.log" || true
+    tail -8 "$ROOT/tool/x264-build.log" || true
+done
+if [ "$X264_DONE" != "1" ]; then
+    echo "all x264 build attempts failed" >&2
+    exit 1
 fi
-make install > "$ROOT/tool/x264-install.log" 2>&1
 fi
 say "x264 installed: $(ls -la "$PREFIX/lib/libx264.a" 2>/dev/null || echo MISSING)"
 
