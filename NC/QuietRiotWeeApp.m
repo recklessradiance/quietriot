@@ -7,8 +7,8 @@
 #import <stdlib.h>
 #import <string.h>
 #import <unistd.h>
-
-extern char **environ;
+#import <fcntl.h>
+#import <errno.h>
 
 #define QR_PORT 8080
 #define QR_DAEMON "/usr/local/bin/quietriotd"
@@ -100,13 +100,38 @@ static char *qr_http_get(const char *path, int timeout_ms)
     return out;
 }
 
-static void qr_spawn_daemon(void)
+static void qr_log(const char *msg)
+{
+    int lfd = open("/var/mobile/Library/quietriot/widget.log",
+                   O_WRONLY | O_CREAT | O_APPEND, 0644);
+    if (lfd < 0) return;
+    write(lfd, msg, strlen(msg));
+    close(lfd);
+}
+
+// clean env: do NOT inherit SpringBoard's environment (Substrate injects
+// DYLD_* vars into quietriotd otherwise, and stale CF vars can kill it)
+static char *qr_spawn_env[] = {
+    "PATH=/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin",
+    "HOME=/var/mobile",
+    "TMPDIR=/var/tmp",
+    NULL
+};
+
+static pid_t qr_spawn_daemon(void)
 {
     pid_t pid = 0;
     const char *sh = "/bin/sh";
     char *argv[] = { (char *)sh, (char *)"-c",
                      "exec " QR_DAEMON " " QR_SPAWN_CMD, NULL };
-    posix_spawn(&pid, sh, NULL, NULL, argv, environ);
+    int rc = posix_spawn(&pid, sh, NULL, NULL, argv, qr_spawn_env);
+
+    char line[160];
+    snprintf(line, sizeof(line), "spawn rc=%d pid=%d err=%s\n",
+             rc, (rc == 0) ? (int)pid : -1,
+             (rc == 0) ? "-" : strerror(rc));
+    qr_log(line);
+    return (rc == 0) ? pid : -1;
 }
 
 @interface QuietRiotWeeAppController : NSObject <BBWeeAppController>
@@ -242,10 +267,12 @@ static int qr_json_int(const char *body, const char *key)
         char *body = qr_http_get("/status", 700);
         NSString *txt;
         UIColor *col;
+        int state; // 0 = down, 1 = live, 2 = paused
         if (body) {
             BOOL live = strstr(body, "\"streaming\":true") != NULL;
             int ws = qr_json_int(body, "\"ws\":");
             if (live) {
+                state = 1;
                 col = [UIColor colorWithRed:0.30 green:0.85 blue:0.35 alpha:1];
                 if (ws > 0)
                     txt = [NSString stringWithFormat:@"● listening · %d listener%s",
@@ -253,11 +280,13 @@ static int qr_json_int(const char *body, const char *key)
                 else
                     txt = @"● listening · no listeners yet";
             } else {
+                state = 2;
                 col = [UIColor colorWithRed:0.95 green:0.70 blue:0.15 alpha:1];
                 txt = @"● daemon up · paused (tap Start)";
             }
             free(body);
         } else {
+            state = 0;
             col = [UIColor colorWithRed:0.95 green:0.30 blue:0.25 alpha:1];
             txt = @"● not running (tap Start)";
         }
@@ -265,6 +294,14 @@ static int qr_json_int(const char *body, const char *key)
             if (me->_status) {
                 me->_status.text = txt;
                 me->_status.textColor = col;
+            }
+            if (me->_startBtn) {
+                me->_startBtn.enabled = (state != 1);
+                me->_startBtn.alpha = (state == 1) ? 0.35f : 1.0f;
+            }
+            if (me->_stopBtn) {
+                me->_stopBtn.enabled = (state != 0);
+                me->_stopBtn.alpha = (state == 0) ? 0.35f : 1.0f;
             }
         });
         [pool drain];
@@ -282,8 +319,10 @@ static int qr_json_int(const char *body, const char *key)
         qr_alert(live ? @"QuietRiot: streaming"
                       : @"QuietRiot: daemon error (see daemon.log)");
     } else {
-        qr_spawn_daemon();
-        qr_alert(@"Starting QuietRiot...");
+        pid_t pid = qr_spawn_daemon();
+        qr_alert((pid > 0) ? [NSString stringWithFormat:@"Starting QuietRiot (pid %d)...",
+                              (int)pid]
+                           : @"QuietRiot: spawn failed (see widget.log)");
     }
     [self refreshStatus];
 }
@@ -296,8 +335,10 @@ static int qr_json_int(const char *body, const char *key)
         char *r = qr_http_get("/shutdown", 1500);
         if (r) free(r);
     }
-    system("/bin/killall quietriotd 2>/dev/null");
-    system("/bin/killall -9 quietriot-ffmpeg 2>/dev/null");
+    int r1 = system("/bin/killall quietriotd 2>/dev/null");
+    int r2 = system("/bin/killall -9 quietriot-ffmpeg 2>/dev/null");
+    qr_log([NSString stringWithFormat:@"stop: shutdown+killall (%d/%d)\n",
+            r1, r2].UTF8String);
     qr_alert(@"QuietRiot stopped");
     [self refreshStatus];
 }

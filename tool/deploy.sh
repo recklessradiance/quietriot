@@ -67,9 +67,13 @@ $SSH "chown -R root:wheel /Library/WeeAppPlugins/QuietRiot.bundle && \
       chown root:wheel /Library/LaunchDaemons/com.quietriot.daemon.plist"
 
 say "(re)starting daemon (mic-only, WebSocket PCM)"
+# NC-widget Start spawns the daemon as the mobile user from SpringBoard, so
+# the log files must be writable by mobile (freopen failure is silent).
 $SSH "launchctl unload /Library/LaunchDaemons/com.quietriot.daemon.plist 2>/dev/null; \
       killall quietriotd 2>/dev/null; killall -9 quietriot-ffmpeg 2>/dev/null; sleep 1; \
       rm -f $WORK/video.fifo $WORK/audio.fifo; \
+      touch $WORK/daemon.log $WORK/ffmpeg.log $WORK/widget.log; \
+      chown mobile:mobile $WORK/daemon.log $WORK/ffmpeg.log $WORK/widget.log; \
       nohup /usr/local/bin/quietriotd --port 8080 --logfile $WORK/daemon.log \
             </dev/null >/dev/null 2>&1 &"
 sleep 2
