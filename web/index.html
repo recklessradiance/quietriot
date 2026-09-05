@@ -14,18 +14,21 @@
            border-radius:6px; background:#333; color:#eee; }
   button.active { background:#4a7; border-color:#4a7; color:#fff; }
   #err { color:#f88; font-size:12px; }
+  #hint { color:#888; font-size:11px; margin-top:6px; }
 </style>
 </head>
 <body>
 <h1>quietriot &middot; live</h1>
 <div id="status">connecting&hellip;</div>
-<video id="v" autoplay playsinline webkit-playsinline controls muted></video>
+<video id="v" autoplay playsinline webkit-playsinline controls></video>
 <div class="btns">
   <button id="power">Stop</button>
   <button id="rear">Rear</button>
   <button id="front">Front</button>
   <button id="reload">Reload</button>
+  <button id="tone">Tone test</button>
 </div>
+<div id="hint">no sound? tap the video once (browsers block unmuted autoplay until you interact)</div>
 <div id="err"></div>
 <script>
 (function () {
@@ -36,6 +39,7 @@
   var front = document.getElementById('front');
   var reload = document.getElementById('reload');
   var power = document.getElementById('power');
+  var tone = document.getElementById('tone');
   var cam = 'rear';
   var streaming = true;
 
@@ -46,13 +50,23 @@
     return !!v.canPlayType('application/vnd.apple.mpegurl');
   }
 
-  function play() {
+  // browsers block unmuted autoplay until a user interaction; any tap/click
+  // or keypress unmutes and resumes playback
+  function unlockAudio() {
+    video.muted = false;
+    if (video.paused) video.play();
+  }
+  video.addEventListener('click', unlockAudio, false);
+  video.addEventListener('touchstart', unlockAudio, false);
+  document.addEventListener('keydown', unlockAudio, false);
+
+  function play(src) {
     err.innerHTML = '';
-    var src = '/hls/stream.m3u8';
+    var s = src || '/hls/stream.m3u8';
     if (canNative()) {
-      video.src = src;
+      video.src = s;
       video.play();
-      setStatus('native HLS');
+      setStatus(src ? 'native HLS (tone)' : 'native HLS');
       return;
     }
     // desktop browsers: try vendored hls.js, then CDN
@@ -63,10 +77,10 @@
         return;
       }
       var hls = window.Hls({ lowLatencyMode: true });
-      hls.loadSource(src);
+      hls.loadSource(s);
       hls.attachMedia(video);
       hls.on(window.Hls.Events.MANIFEST_PARSED, function () { video.play(); });
-      setStatus('hls.js');
+      setStatus(src ? 'hls.js (tone)' : 'hls.js');
     };
     if (!useCdn) { started(); return; }
     var sc = document.createElement('script');
@@ -126,6 +140,7 @@
   rear.onclick = function () { switchCam('rear'); };
   front.onclick = function () { switchCam('front'); };
   reload.onclick = function () { play(); };
+  tone.onclick = function () { play('/hls/tone.m3u8'); unlockAudio(); };
   power.onclick = function () {
     var x = new XMLHttpRequest();
     x.open('GET', '/toggle', true);

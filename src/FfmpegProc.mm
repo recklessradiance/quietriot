@@ -123,7 +123,7 @@ volatile pid_t qr_ffmpeg_pid = 0;
         return NO;
     }
 
-    char vsize[32], fpsArg[16], rateArg[16], chArg[8], vb[32], mr[32], bs[32], ab[32], gain[32];
+    char vsize[32], fpsArg[16], rateArg[16], chArg[8], vb[32], mr[32], bs[32], ab[32], gain[64];
     snprintf(vsize, sizeof(vsize), "%dx%d", _w, _h);
     snprintf(fpsArg, sizeof(fpsArg), "%d", _fps);
     snprintf(rateArg, sizeof(rateArg), "%d", _rate);
@@ -132,7 +132,7 @@ volatile pid_t qr_ffmpeg_pid = 0;
     snprintf(mr, sizeof(mr), "%dk", _videoBitrate * 12 / 10);
     snprintf(bs, sizeof(bs), "%dk", _videoBitrate * 2);
     snprintf(ab, sizeof(ab), "%dk", _audioBitrate);
-    snprintf(gain, sizeof(gain), "volume=%ddB", _audioGain);
+    snprintf(gain, sizeof(gain), "volume=%ddB,alimiter=limit=0.95:level=false", _audioGain);
 
     const char *argv[96];
     int i = 0;

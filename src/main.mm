@@ -40,7 +40,7 @@ int main(int argc, char **argv)
     sigaction(SIGINT, &sa, NULL);
     sigaction(SIGTERM, &sa, NULL);
 
-    int port = 8080, fps = 15, vb = 400, ab = 64, ag = 12;
+    int port = 8080, fps = 15, vb = 400, ab = 64, ag = 18;
     QRCamera initialCamera = QRCameraRear;
     NSString *workdir = @"/var/mobile/Library/quietriot";
     NSString *ffbin = @"/usr/local/bin/quietriot-ffmpeg";
