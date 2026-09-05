@@ -3,6 +3,7 @@
 #import "CaptureEngine.h"
 #import "FfmpegProc.h"
 #import "HttpServer.h"
+#import "AudioHub.h"
 
 #include <signal.h>
 #include <unistd.h>
@@ -25,10 +26,13 @@ static void qr_terminate(int sig)
 static void usage(void)
 {
     fprintf(stderr,
-        "quietriotd - live camera/mic HLS streamer for jailbroken iOS 6.1.3\n"
-        "usage: quietriotd [--port N] [--camera rear|front] [--fps N]\n"
-        "                  [--workdir PATH] [--ffmpeg PATH] [--logfile PATH]\n"
-        "                  [--video-bitrate K] [--audio-bitrate K] [--audio-gain DB]\n");
+        "quietriotd - live mic/camera streamer for jailbroken iOS 6.1.3\n"
+        "default: mic-only WebSocket PCM (/audio page, ~150-250ms latency)\n"
+        "usage: quietriotd [--port N] [--fps N] [--logfile PATH]\n"
+        "                  [--video]  (camera+mic HLS pipeline, / = video page)\n"
+        "                  [--audio-only]  (explicit, same as default)\n"
+        "video mode only: [--camera rear|front] [--workdir PATH] [--ffmpeg PATH]\n"
+        "                 [--video-bitrate K] [--audio-bitrate K] [--audio-gain DB]\n");
 }
 
 int main(int argc, char **argv)
@@ -41,6 +45,7 @@ int main(int argc, char **argv)
     sigaction(SIGTERM, &sa, NULL);
 
     int port = 8080, fps = 15, vb = 400, ab = 64, ag = 18;
+    int videoMode = 0;   // default: mic-only WebSocket stream
     QRCamera initialCamera = QRCameraRear;
     NSString *workdir = @"/var/mobile/Library/quietriot";
     NSString *ffbin = @"/usr/local/bin/quietriot-ffmpeg";
@@ -50,6 +55,8 @@ int main(int argc, char **argv)
         const char *a = argv[i];
         if (strcmp(a, "--port") == 0 && i + 1 < argc) port = atoi(argv[++i]);
         else if (strcmp(a, "--fps") == 0 && i + 1 < argc) fps = atoi(argv[++i]);
+        else if (strcmp(a, "--video") == 0) videoMode = 1;
+        else if (strcmp(a, "--audio-only") == 0) videoMode = 0;
         else if (strcmp(a, "--camera") == 0 && i + 1 < argc)
             initialCamera = strcmp(argv[++i], "front") == 0 ? QRCameraFront : QRCameraRear;
         else if (strcmp(a, "--workdir") == 0 && i + 1 < argc)
@@ -83,6 +90,10 @@ int main(int argc, char **argv)
 
         engine.delegate = proc;
         engine.fps = fps;
+        engine.audioOnly = videoMode ? NO : YES;
+
+        AudioHub *hub = [[AudioHub alloc] init];
+        engine.audioHub = hub;
 
         HttpServer *server = [[HttpServer alloc] init];
         server.port = port;
@@ -90,6 +101,9 @@ int main(int argc, char **argv)
         server.hlsDir = [workdir stringByAppendingPathComponent:@"hls"];
         server.engine = engine;
         server.proc = proc;
+        server.audioHub = hub;
+        server.audioOnly = engine.audioOnly;
+        [hub release];   // owned by server (retain) from here
 
         NSError *err = nil;
         if (![engine start:&err]) {
@@ -97,7 +111,7 @@ int main(int argc, char **argv)
                    err ? [err localizedDescription].UTF8String : "?");
             return 1;
         }
-        if (initialCamera == QRCameraFront)
+        if (videoMode && initialCamera == QRCameraFront)
             [engine switchTo:QRCameraFront error:nil];
         if (![server start:&err]) {
             QR_LOG("http server failed: %s\n",
@@ -105,8 +119,9 @@ int main(int argc, char **argv)
             return 1;
         }
 
-        QR_LOG("quietriotd up on http://0.0.0.0:%d/  (camera=%s, stream=/hls/stream.m3u8)\n",
-               port, initialCamera == QRCameraFront ? "front" : "rear");
+        QR_LOG("quietriotd up on http://0.0.0.0:%d/  (%s)\n", port,
+               videoMode ? "camera+mic HLS, watch /hls/stream.m3u8"
+                         : "mic-only ws PCM, open /audio");
         // AVFoundation needs the main CFRunLoop serviced (dispatch_main()
         // alone never drains it -> no sample buffers, no notifications).
         NSRunLoop *rl = [NSRunLoop mainRunLoop];

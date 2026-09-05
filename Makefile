@@ -9,7 +9,7 @@ include $(THEOS)/makefiles/common.mk
 
 TOOL_NAME = quietriotd
 
-quietriotd_FILES = src/main.mm src/CaptureEngine.mm src/FifoWriter.mm src/FfmpegProc.mm src/HttpServer.mm
+quietriotd_FILES = src/main.mm src/CaptureEngine.mm src/FifoWriter.mm src/FfmpegProc.mm src/HttpServer.mm src/AudioHub.mm
 
 quietriotd_INSTALL_PATH = /usr/local/bin
 quietriotd_FRAMEWORKS = Foundation AVFoundation CoreMedia CoreVideo CoreAudio AudioToolbox

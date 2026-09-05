@@ -65,7 +65,7 @@ volatile pid_t qr_ffmpeg_pid = 0;
                              attributes:nil error:err];
     ok = ok && [fm createDirectoryAtPath:[_workDir stringByAppendingPathComponent:@"hls"]
              withIntermediateDirectories:YES attributes:nil error:err];
-    // the daemon may be (re)spawned by the Activator tweak from SpringBoard
+    // the daemon may be (re)spawned by the NC widget from SpringBoard
     // (mobile user); make the work dirs writable for it
     chmod([_workDir fileSystemRepresentation], 0777);
     chmod([[_workDir stringByAppendingPathComponent:@"hls"] fileSystemRepresentation], 0777);

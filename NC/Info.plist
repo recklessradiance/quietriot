@@ -1,0 +1,17 @@
+{
+  "CFBundleExecutable" = "QuietRiotWeeApp";
+  "CFBundleIdentifier" = "com.quietriot.weeapp";
+  "CFBundleName" = "QuietRiot";
+  "CFBundleDisplayName" = "QuietRiot";
+  "CFBundlePackageType" = "BNDL";
+  "CFBundleSignature" = "????";
+  "CFBundleVersion" = "1.0";
+  "CFBundleShortVersionString" = "1.0";
+  "CFBundleInfoDictionaryVersion" = "6.0";
+  "CFBundleDevelopmentRegion" = "English";
+  "CFBundleSupportedPlatforms" = ("iPhoneOS");
+  "UIDeviceFamily" = (1);
+  "MinimumOSVersion" = "6.1";
+  "DTPlatformName" = "iphoneos";
+  "NSPrincipalClass" = "QuietRiotWeeAppController";
+}

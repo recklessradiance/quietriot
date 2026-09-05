@@ -4,6 +4,7 @@
 #import <CoreVideo/CoreVideo.h>
 #import <AudioToolbox/AudioToolbox.h>
 #import "FifoWriter.h"
+#import "AudioHub.h"
 
 #define QR_LOG(...) fprintf(stderr, "[capture] " __VA_ARGS__)
 
@@ -53,6 +54,8 @@
 @synthesize videoFps = _measuredFps;
 @synthesize videoDrops = _videoDrops;
 @synthesize running = _running;
+@synthesize audioOnly = _audioOnly;
+@synthesize audioHub = _audioHub;
 
 - (id)initWithFps:(int)fps
 {
@@ -114,7 +117,8 @@
 
     _session = [[AVCaptureSession alloc] init];
     // Medium preset = 480x360 on the 4s; the sane ceiling for A5 software x264.
-    _session.sessionPreset = AVCaptureSessionPresetMedium;
+    // audio-only runs with the default preset (there is no video to constrain).
+    if (!_audioOnly) _session.sessionPreset = AVCaptureSessionPresetMedium;
     [[NSNotificationCenter defaultCenter] addObserver:self
         selector:@selector(sessionRuntimeError:)
         name:AVCaptureSessionRuntimeErrorNotification object:_session];
@@ -122,46 +126,56 @@
     AVCaptureDevicePosition pos = AVCaptureDevicePositionBack;
     if (getenv("QR_CAM") && strcmp(getenv("QR_CAM"), "front") == 0)
         pos = AVCaptureDevicePositionFront;
-    AVCaptureDevice *dev = nil;
-    NSArray *vids = [AVCaptureDevice devicesWithMediaType:AVMediaTypeVideo];
-    for (AVCaptureDevice *d in vids) {
-        QR_LOG("camera candidate: %s pos=%ld connected=%d modelID=%s\n",
-               d.uniqueID.UTF8String ?: "?", (long)d.position,
-               d.connected ? 1 : 0, d.modelID.UTF8String ?: "?");
-        if (dev == nil || d.position == pos) dev = d;
+    AVCaptureDeviceInput *in = nil;
+    if (!_audioOnly) {
+        AVCaptureDevice *dev = nil;
+        NSArray *vids = [AVCaptureDevice devicesWithMediaType:AVMediaTypeVideo];
+        for (AVCaptureDevice *d in vids) {
+            QR_LOG("camera candidate: %s pos=%ld connected=%d modelID=%s\n",
+                   d.uniqueID.UTF8String ?: "?", (long)d.position,
+                   d.connected ? 1 : 0, d.modelID.UTF8String ?: "?");
+            if (dev == nil || d.position == pos) dev = d;
+        }
+        if (dev == nil) dev = [AVCaptureDevice defaultDeviceWithMediaType:AVMediaTypeVideo];
+        in = [AVCaptureDeviceInput deviceInputWithDevice:dev error:err];
+        if (pos == AVCaptureDevicePositionFront) _videoInputFront = in; else _videoInputRear = in;
+        if (in == nil) return NO;
     }
-    if (dev == nil) dev = [AVCaptureDevice defaultDeviceWithMediaType:AVMediaTypeVideo];
-    AVCaptureDeviceInput *in = [AVCaptureDeviceInput deviceInputWithDevice:dev error:err];
-    if (pos == AVCaptureDevicePositionFront) _videoInputFront = in; else _videoInputRear = in;
-    if (in == nil) return NO;
     _audioInput = [AVCaptureDeviceInput deviceInputWithDevice:
         [AVCaptureDevice defaultDeviceWithMediaType:AVMediaTypeAudio] error:err];
 
-    _videoOut = [[AVCaptureVideoDataOutput alloc] init];
-    NSDictionary *vs = [NSDictionary dictionaryWithObjectsAndKeys:
-        [NSNumber numberWithUnsignedInt:kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange],
-            (id)kCVPixelBufferPixelFormatTypeKey, nil];
-    _videoOut.videoSettings = vs;
-    _videoOut.alwaysDiscardsLateVideoFrames = YES;
-    [_videoOut setSampleBufferDelegate:self queue:_videoQueue];
+    if (!_audioOnly) {
+        _videoOut = [[AVCaptureVideoDataOutput alloc] init];
+        NSDictionary *vs = [NSDictionary dictionaryWithObjectsAndKeys:
+            [NSNumber numberWithUnsignedInt:kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange],
+                (id)kCVPixelBufferPixelFormatTypeKey, nil];
+        _videoOut.videoSettings = vs;
+        _videoOut.alwaysDiscardsLateVideoFrames = YES;
+        [_videoOut setSampleBufferDelegate:self queue:_videoQueue];
+    }
 
     _audioOut = [[AVCaptureAudioDataOutput alloc] init];
     [_audioOut setSampleBufferDelegate:self queue:_audioQueue];
 
     [_session beginConfiguration];
-    [_session addInput:_videoInputRear];
+    if (!_audioOnly && in) [_session addInput:in];
     if (!getenv("QR_NO_AUDIO")) {
         if (_audioInput) [_session addInput:_audioInput];
         [_session addOutput:_audioOut];
     }
-    [_session addOutput:_videoOut];
+    if (!_audioOnly) [_session addOutput:_videoOut];
     [_session commitConfiguration];
-    QR_LOG("session wiring done: videoConns=%lu audioConns=%lu\n",
-           (unsigned long)[_videoOut.connections count],
-           (unsigned long)[_audioOut.connections count]);
+    if (_audioOnly) {
+        QR_LOG("audio-only wiring done: audioConns=%lu\n",
+               (unsigned long)[_audioOut.connections count]);
+    } else {
+        QR_LOG("session wiring done: videoConns=%lu audioConns=%lu\n",
+               (unsigned long)[_videoOut.connections count],
+               (unsigned long)[_audioOut.connections count]);
+    }
     _camera = (pos == AVCaptureDevicePositionFront) ? QRCameraFront : QRCameraRear;
 
-    [self applyOrientation];
+    if (!_audioOnly) [self applyOrientation];
 
     AVAudioSession *as = [AVAudioSession sharedInstance];
     [as setCategory:AVAudioSessionCategoryRecord error:nil];
@@ -231,6 +245,12 @@
 
 - (BOOL)switchTo:(QRCamera)camera error:(NSError **)err
 {
+    if (_audioOnly) {
+        if (err) *err = [NSError errorWithDomain:@"quietriot" code:4
+            userInfo:[NSDictionary dictionaryWithObject:
+                      @"audio-only mode: no camera" forKey:NSLocalizedDescriptionKey]];
+        return NO;
+    }
     if (!_running) {
         if (err) *err = [NSError errorWithDomain:@"quietriot" code:2
             userInfo:[NSDictionary dictionaryWithObject:@"not running"
@@ -424,6 +444,10 @@
 
 - (void)writeAudio:(const void *)buf length:(unsigned long)len
 {
+    // ws low-latency tap: fans raw PCM out before the (optional) ffmpeg path
+    AudioHub *hub = _audioHub;
+    if (hub) [hub broadcast:buf length:len];
+
     id<CaptureEngineDelegate> d = _delegate;
     if (d && [d respondsToSelector:@selector(writeAudioStream:length:)])
         [d writeAudioStream:buf length:len];

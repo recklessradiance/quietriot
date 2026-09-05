@@ -14,7 +14,7 @@
 		<string>--logfile</string>
 		<string>/var/mobile/Library/quietriot/daemon.log</string>
 	</array>
-	<!-- disabled by design: gestures (Activator) start/stop the daemon
+	<!-- disabled by design: the NC widget (Start button) starts the daemon
 	     process. To restore boot autostart, set RunAtLoad to true, add
 	     <key>KeepAlive</key><true/>, then: launchctl load this file. -->
 	<key>RunAtLoad</key>

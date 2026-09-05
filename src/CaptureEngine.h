@@ -6,6 +6,8 @@ typedef enum {
     QRCameraFront = 1
 } QRCamera;
 
+@class AudioHub;
+
 @protocol CaptureEngineDelegate <NSObject>
 @optional
 - (void)captureVideoReady:(int)width height:(int)height fps:(int)fps;
@@ -22,6 +24,8 @@ typedef enum {
 @property (nonatomic, assign, readonly) QRCamera camera;
 @property (nonatomic, assign) int fps;
 @property (nonatomic, assign) id<CaptureEngineDelegate> delegate;
+@property (nonatomic, assign) BOOL audioOnly;      // mic-only: no camera, no ffmpeg
+@property (nonatomic, assign) AudioHub *audioHub;  // ws pcm tap (not retained)
 
 @property (nonatomic, assign, readonly) double videoFps;
 @property (nonatomic, assign, readonly) unsigned long videoDrops;

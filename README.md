@@ -1,28 +1,49 @@
 # quietriot
 
-Live camera + microphone streamer for a jailbroken iPhone 4s (iOS 6.1.3, armv7).
+Live **audio-only** (mic) streamer for a jailbroken iPhone 4s (iOS 6.1.3, armv7),
+with an optional camera HLS mode.
 
-A single daemon (`quietriotd`) runs on the phone:
+A single daemon (`quietriotd`) runs on the phone. Default mode is mic-only:
 
-- captures the rear or front camera (AVCaptureSession, 480x360 preset, ~15fps) and mic audio
+- captures the mic (AVCaptureAudioDataOutput, 44.1kHz mono s16le, ~23ms chunks)
+- fans raw PCM out over a WebSocket (`/ws/audio`) straight from the capture queue
+- a Web Audio page at `http://<phone-ip>:8080/` plays it with ~120-180ms latency
+
+`--video` restores the original camera+mic HLS pipeline:
+
+- captures rear/front camera (AVCaptureSession, 480x360, ~15fps) + mic
 - pipes raw NV12 video + s16le PCM into an on-device `ffmpeg` (cross-compiled, x264 ultrafast + AAC)
 - ffmpeg writes an HLS playlist + 1-second MPEG-TS segments
 - the same daemon serves the HLS files and a control web page over HTTP
+- ~3-4s latency (HLS floor; GOP = 1s)
 
-Watch it from any browser:
-- iOS Safari (native HLS) and any modern desktop browser (hls.js fallback) at `http://<phone-ip>:8080/`
-- switch front/rear camera live from the control page (`/switch?c=front|rear`)
+## Start/stop from the phone (Notification Center widget)
 
-Expected latency: ~4-10 seconds (HLS floor on iOS 6-era Safari). The A5 encodes
-H.264 in software only, so 480x360 @ 15fps is the practical ceiling.
+The `QuietRiot` WeeApp (`NC/QuietRiotWeeApp.m`) is a Notification Center widget
+(`/Library/WeeAppPlugins/QuietRiot.bundle`, BBWeeAppController protocol) that
+shows a status label plus **Start** and **Stop** buttons below the weather
+widget (drag to reorder in Settings -> Notifications):
+
+- **Start**: if the daemon is down, spawns `quietriotd` (mic streaming starts
+  immediately, as the mobile user); if it is up, turns streaming on (`/start`)
+- **Stop**: asks the daemon to exit (`/shutdown`: kills ffmpeg, stops capture)
+  and `killall`s any leftovers - the process is gone afterwards
+- the status label refreshes whenever NC opens
+
+The daemon is not always-on by design: widgets/buttons control the process.
+(`deploy.sh` leaves it running after a deploy; `/shutdown` or the Stop button
+kills it. A reboot starts nothing - use the widget.)
 
 ## Layout
 
 ```
 Makefile                  theos build for quietriotd (armv7, min iOS 6.1.3)
 src/                      daemon sources (ObjC/C)
-web/index.html            control page (ES5, native HLS + hls.js fallback)
+web/index.html            video control page (ES5, native HLS + hls.js)  (--video)
+web/audio.html            low-latency audio page (Web Audio + WebSocket)
+NC/QuietRiotWeeApp.m      Notification Center widget (Start/Stop buttons)
 tool/build-x264-ffmpeg.sh cross-compiles x264 + ffmpeg for armv7 iOS 6.1.3
+tool/build-weeapp.sh      builds the NC widget bundle
 tool/deploy.sh            installs binaries/config onto the phone over SSH
 control/*.plist           launchd daemon definition
 ```
@@ -34,9 +55,11 @@ needed - the current Command Line Tools clang still emits armv7).
 
 ```sh
 export THEOS=/Users/<you>/theos
-make                      # builds build/quietriotd (armv7)
-tool/build-x264-ffmpeg.sh # builds tool/prefix/bin/ffmpeg (armv7, static)
+make                      # builds .theos/obj/debug/armv7/quietriotd (armv7)
+tool/build-weeapp.sh      # builds .theos/obj/QuietRiot.bundle (NC widget)
+tool/build-x264-ffmpeg.sh # builds tool/prefix/bin/ffmpeg (armv7, static)  [--video only]
 ```
+
 
 ## Device setup (jailbroken 4s, iOS 6.1.3)
 
@@ -45,86 +68,79 @@ Via Cydia: install **OpenSSH**. Default `root` / `alpine`.
 ## Deploy
 
 ```sh
-tool/deploy.sh 192.168.x.x          # installs daemon + ffmpeg + web + tweak, restarts, resprings
+tool/deploy.sh 192.168.x.x          # builds, installs daemon + ffmpeg + web + NC widget, restarts, resprings
 tool/deploy.sh 192.168.x.x logs     # tail daemon + ffmpeg logs
-tool/deploy.sh 192.168.x.x stop     # stop daemon
+tool/deploy.sh 192.168.x.x stop     # stop the daemon
+tool/deploy.sh 192.168.x.x shell    # interactive ssh
 ```
 
-The daemon runs as root via launchd (`/Library/LaunchDaemons/com.quietriot.daemon.plist`);
-`deploy.sh` also falls back to a `nohup` start (launchctl over non-interactive SSH
-fails; see gotchas). It installs the Activator tweak into
-`/Library/MobileSubstrate/DynamicLibraries/` and respings SpringBoard at the end.
-Both binaries are fake-signed with `ldid -S` before upload (camera access from a
-CLI daemon needs a valid signature; no Apple developer account required).
+What it does: fake-signs the binaries with `ldid -S` (camera/mic access from a
+CLI daemon needs a valid signature; no Apple developer account required),
+installs `quietriotd` + `quietriot-ffmpeg` into `/usr/local/bin`, the web pages
+into `/var/mobile/Library/quietriot/web`, the NC widget bundle into
+`/Library/WeeAppPlugins/QuietRiot.bundle`, and the launchd plist into
+`/Library/LaunchDaemons`. It then restarts the daemon (nohup fallback -
+launchctl over non-interactive SSH fails; see gotchas), smoke-tests
+`/status` + the audio page, and respings SpringBoard so the widget picks up.
+The daemon is left **running** after a deploy.
 
-Run it manually while debugging:
+Run it manually while debugging (default = audio-only; add `--video` for the
+camera pipeline):
 
 ```sh
-ssh root@<phone-ip> "quietriotd --port 8080 --camera rear --logfile /var/mobile/Library/quietriot/daemon.log"
+ssh root@<phone-ip> "quietriotd --port 8080 --logfile /var/mobile/Library/quietriot/daemon.log"
 ```
-
-## Start/stop from the phone (Activator)
-
-The daemon is NOT always running: the `quietriotctl` tweak (source:
-`Tweak/Tweak.m`, built by `tool/build-tweak.sh`, loaded into SpringBoard only)
-registers three Activator actions after a respring: **QuietRiot: Toggle /
-Start / Stop stream**. Assign them to any gesture in the Activator settings
-app. These control the daemon *process* itself:
-
-- **Start**: if the daemon is down, the tweak spawns it as the mobile user
-  (`/var/mobile/Library/quietriot` state, no TCC prompts on iOS 6) — it starts
-  streaming immediately with the default camera.
-- **Stop**: kills `quietriotd` (its SIGTERM handler kills the ffmpeg encoder
-  too) and removes the fifos.
-- **Toggle**: start if down, stop if up.
-
-The tweak is privilege-free: it probes `http://127.0.0.1:8080/status` on
-localhost and uses `killall` for the stop path. Feedback: a small alert
-("Starting QuietRiot..." / "QuietRiot stopped" / "not running").
-
-The launchd plist is installed with `RunAtLoad=false` (no KeepAlive), so the
-daemon does not autostart at boot. To restore autostart: set `RunAtLoad` to
-true, add `<key>KeepAlive</key><true/>`, then `launchctl load
-/Library/LaunchDaemons/com.quietriot.daemon.plist`.
-
-- The web page has the same Start/Stop button (`/toggle`) — that one toggles
-  *streaming* inside the running daemon (camera off, ffmpeg killed, no
-  process restart needed); `/status` reports a `streaming` flag.
-- Note: `deploy.sh`/root `killall` can stop even a SpringBoard-spawned (mobile)
-  daemon.
 
 ## Flags
 
 ```
 --port N          HTTP port (default 8080)
---camera rear|front
---fps N           default 15
+--video           camera+mic HLS mode (default is mic-only WebSocket PCM)
+--camera rear|front     [--video]
+--fps N           default 15  [--video]
 --workdir PATH    default /var/mobile/Library/quietriot
---ffmpeg PATH     default /usr/local/bin/quietriot-ffmpeg
+--ffmpeg PATH     default /usr/local/bin/quietriot-ffmpeg  [--video]
 --logfile PATH    redirect daemon stdout/stderr to this file
---video-bitrate K default 400
---audio-bitrate K default 64
---audio-gain DB   mic boost in dB, default 12 (the 4s mic is very quiet)
+--video-bitrate K default 400  [--video]
+--audio-bitrate K default 64   [--video]
+--audio-gain DB   mic boost in dB, default 18 (the 4s mic is very quiet)
 ```
 
-Latency notes: x264 GOP = 1s (`-g = fps`) and HLS segments cut at ~1s
-(`hls_time 1`, list size 3) → ~3-4s glass-to-glass on iOS 6 Safari.
+Audio-only latency: capture chunks are ~23ms; the client schedules with
+~100ms jitter buffer, so expect ~120-180ms glass-to-glass. Video mode:
+x264 GOP = 1s (`-g = fps`), HLS segments cut at ~1s (`hls_time 1`,
+list size 3) → ~3-4s glass-to-glass.
 
 ## Notes
 
 - All APIs used are iOS 6-era (the 10.3 SDK is only used to compile; nothing
   iOS 7+ is called at runtime).
-- `ffmpeg` needs `libx264` (GPL); keep the ffmpeg build script's output private.
-- If the A5 can't keep up, drop to 320x240 by changing the session preset in
-  `src/CaptureEngine.mm` and rebuilding.
+- The HTTP server hand-rolls RFC6455 WebSocket upgrade (SHA1 + base64 accept
+  key) and broadcasts 16-bit PCM frames; slow clients are dropped, never
+  allowed to block the capture queue.
+- `--video` mode needs `libx264` (GPL); keep the ffmpeg build script's output private.
+- If the A5 can't keep up in video mode, drop to 320x240 by changing the
+  session preset in `src/CaptureEngine.mm` and rebuilding.
 
 ## Device gotchas (learned on the 4s / iOS 6.1.3)
 
 - `launchctl` over non-interactive SSH fails with `launch_msg(): Socket is not
-  connected`. The LaunchDaemon plist still works: it loads on next reboot, or
-  run the daemon directly with nohup (as `tool/deploy.sh` falls back to).
-- iOS 6.1.3 has no `ps`, no `plutil`, no `awk`; use `killall` and
+  connected`. The LaunchDaemon plist still works at boot (RunAtLoad is false,
+  so nothing autostarts); run the daemon with nohup instead (what
+  `tool/deploy.sh` does), or start it from the NC widget.
+- iOS 6.1.3 has no `ps`, no `pgrep`, no `plutil`, no `awk`; use `killall` and
   `launchctl list`.
+- `scp -r` to a not-yet-existing remote directory fails ("path canonicalization
+  failed" - OpenSSH 6.7 sftp) on iOS 6: `ssh mkdir -p` the directory first,
+  then scp files individually (that's how the widget bundle is installed).
+- iOS 5/6 Notification Center widgets are "WeeApps": bundles under
+  `/Library/WeeAppPlugins/<Name>.bundle` implementing the BBWeeAppController
+  protocol (see `NC/QuietRiotWeeApp.m`). Enable/reorder them in Settings ->
+  Notifications. Install/remove/respring SpringBoard to refresh.
+- On the Mac, use `/usr/bin/curl` (the brew curl on this machine is a broken
+  foreign-arch install) and quote URLs containing `?`.
+- The A5's mic is quiet; `--audio-gain` (default 18 dB) feeds
+  `volume` + `alimiter` in the ffmpeg/capture chain.
 - AVFoundation will NOT deliver sample buffers unless the main CFRunLoop is
   serviced — `dispatch_main()` alone is not enough. See `main.mm`.
 - `poll()` on fifos never reports POLLOUT here; `qr_fifo_write` uses

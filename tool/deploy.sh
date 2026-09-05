@@ -1,5 +1,5 @@
 #!/bin/bash
-# Deploys quietriotd + ffmpeg + web page + launchd plist + Activator tweak
+# Deploys quietriotd + ffmpeg + web pages + launchd plist + NC WeeApp widget
 # to the iPhone over SSH.
 # usage:
 #   tool/deploy.sh <device-ip>              install + (re)start daemon + respring
@@ -25,62 +25,63 @@ case "$ACTION" in
   logs)  exec $SSH "tail -n 40 -f $WORK/daemon.log $WORK/ffmpeg.log 2>/dev/null" ;;
 esac
 
-# build fresh daemon binary + activator tweak
-say "building quietriotd + tweak"
+# build fresh daemon binary + NC widget bundle
+say "building quietriotd + weeapp"
 (cd "$ROOT" && env THEOS="${THEOS:-$HOME/theos}" make -s) \
   || { echo "make failed" >&2; exit 1; }
-"$ROOT/tool/build-tweak.sh"
+"$ROOT/tool/build-weeapp.sh"
 
 BIN="$ROOT/.theos/obj/debug/armv7/quietriotd"
 FF="$ROOT/tool/prefix/bin/ffmpeg"
-TWEAK="$ROOT/.theos/obj/quietriotctl.dylib"
+BUNDLE="$ROOT/.theos/obj/QuietRiot.bundle"
 [ -x "$BIN" ] || { echo "missing $BIN" >&2; exit 1; }
 [ -x "$FF" ] || { echo "ffmpeg missing - run tool/build-x264-ffmpeg.sh first" >&2; exit 1; }
-[ -f "$TWEAK" ] || { echo "missing $TWEAK" >&2; exit 1; }
+[ -x "$BUNDLE/QuietRiotWeeApp" ] || { echo "missing weeapp binary" >&2; exit 1; }
 
 say "fake-signing binaries (ldid -S)"
 ldid -S "$BIN"
 ldid -S "$FF"
 
 say "installing on device ($IP)"
-$SSH "mkdir -p /usr/local/bin $WORK/web $WORK/hls /Library/MobileSubstrate/DynamicLibraries"
+$SSH "mkdir -p /usr/local/bin $WORK/web $WORK/hls /Library/WeeAppPlugins"
 $SCP "$BIN" root@$IP:/usr/local/bin/quietriotd
 $SCP "$FF"  root@$IP:/usr/local/bin/quietriot-ffmpeg
-$SCP "$TWEAK" root@$IP:/Library/MobileSubstrate/DynamicLibraries/quietriotctl.dylib
-$SCP "$ROOT/control/quietriotctl.plist" \
-     root@$IP:/Library/MobileSubstrate/DynamicLibraries/quietriotctl.plist
 $SCP "$ROOT/web/index.html" root@$IP:$WORK/web/index.html
+$SCP "$ROOT/web/audio.html" root@$IP:$WORK/web/audio.html
 [ -f "$ROOT/web/hls.min.js" ] && \
   $SCP "$ROOT/web/hls.min.js" root@$IP:$WORK/web/hls.min.js
 $SCP "$ROOT/control/com.quietriot.daemon.plist" root@$IP:/Library/LaunchDaemons/com.quietriot.daemon.plist
-$SSH "chown root:wheel /usr/local/bin/quietriotd /usr/local/bin/quietriot-ffmpeg && \
+
+# NC widget (replaces the old activator tweak); file-by-file scp: the old
+# OpenSSH sftp-server on iOS 6 chokes on `scp -r` into a fresh dir
+$SSH "rm -rf /Library/WeeAppPlugins/QuietRiot.bundle && \
+      rm -f /Library/MobileSubstrate/DynamicLibraries/quietriotctl.dylib \
+            /Library/MobileSubstrate/DynamicLibraries/quietriotctl.plist && \
+      mkdir -p /Library/WeeAppPlugins/QuietRiot.bundle"
+$SCP "$BUNDLE/QuietRiotWeeApp" root@$IP:/Library/WeeAppPlugins/QuietRiot.bundle/QuietRiotWeeApp
+$SCP "$BUNDLE/Info.plist" root@$IP:/Library/WeeAppPlugins/QuietRiot.bundle/Info.plist
+$SSH "chown -R root:wheel /Library/WeeAppPlugins/QuietRiot.bundle && \
+      chmod 755 /Library/WeeAppPlugins/QuietRiot.bundle/QuietRiotWeeApp && \
+      chown root:wheel /usr/local/bin/quietriotd /usr/local/bin/quietriot-ffmpeg && \
       chmod 755 /usr/local/bin/quietriotd /usr/local/bin/quietriot-ffmpeg && \
-      chown root:wheel /Library/MobileSubstrate/DynamicLibraries/quietriotctl.dylib && \
-      chmod 755 /Library/MobileSubstrate/DynamicLibraries/quietriotctl.dylib && \
-      chown root:wheel /Library/MobileSubstrate/DynamicLibraries/quietriotctl.plist && \
-      chmod 644 /Library/MobileSubstrate/DynamicLibraries/quietriotctl.plist && \
       chown root:wheel /Library/LaunchDaemons/com.quietriot.daemon.plist"
 
-say "(re)starting daemon"
-# unload first so launchd KeepAlive cannot respawn the old binary mid-swap
+say "(re)starting daemon (mic-only, WebSocket PCM)"
 $SSH "launchctl unload /Library/LaunchDaemons/com.quietriot.daemon.plist 2>/dev/null; \
       killall quietriotd 2>/dev/null; killall -9 quietriot-ffmpeg 2>/dev/null; sleep 1; \
       rm -f $WORK/video.fifo $WORK/audio.fifo; \
-      nohup /usr/local/bin/quietriotd --port 8080 --camera rear --logfile $WORK/daemon.log \
+      nohup /usr/local/bin/quietriotd --port 8080 --logfile $WORK/daemon.log \
             </dev/null >/dev/null 2>&1 &"
 sleep 2
 
 say "smoke test (from Mac)"
 /usr/bin/curl -m 5 -s "http://$IP:8080/status" || echo "(status not reachable yet)"
 echo
-/usr/bin/curl -m 5 -s "http://$IP:8080/hls/stream.m3u8" | head -3 || true
+/usr/bin/curl -m 5 -s -o /dev/null -w "/audio page: %{http_code}\n" "http://$IP:8080/audio" || true
 
-say "stopping daemon (gestures control it now; not always-on)"
-$SSH "killall quietriotd 2>/dev/null; killall quietriot-ffmpeg 2>/dev/null; sleep 1; \
-      rm -f $WORK/video.fifo $WORK/audio.fifo" || true
-
-say "installing tweak -> respring"
+say "respringing SpringBoard (loads the QuietRiot NC widget)"
 $SSH "killall SpringBoard" || true
 
 say "done"
-say "start watching with the Activator gesture (QuietRiot -> assign any), or: ssh + nohup"
+say "daemon left RUNNING; Control it from Notification Center (QuietRiot buttons), or /shutdown + killall"
+say "listen at http://$IP:8080/ (tap Enable live audio)"

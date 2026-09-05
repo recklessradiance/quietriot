@@ -1,6 +1,7 @@
 #import "HttpServer.h"
 #import "CaptureEngine.h"
 #import "FfmpegProc.h"
+#import "AudioHub.h"
 
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -22,6 +23,7 @@ HttpServer *qr_shared_server = NULL;
 
 static void *qr_accept_thread(void *ctx);
 static void *qr_conn_thread(void *arg);
+static void qr_ws_read_loop(int fd);
 
 static const char *qr_mime_m3u8 = "application/vnd.apple.mpegurl";
 static const char *qr_mime_ts   = "video/mp2t";
@@ -37,6 +39,8 @@ static const char *qr_mime_ts   = "video/mp2t";
 @synthesize hlsDir = _hlsDir;
 @synthesize engine = _engine;
 @synthesize proc = _proc;
+@synthesize audioHub = _audioHub;
+@synthesize audioOnly = _audioOnly;
 
 - (id)init
 {
@@ -98,7 +102,146 @@ static const char *qr_mime_ts   = "video/mp2t";
     [_hlsDir release];
     [_engine release];
     [_proc release];
+    [_audioHub release];
     [super dealloc];
+}
+
+#pragma mark - websocket handshake crypto (SHA-1 + base64)
+
+static uint32_t qr_rotl32(uint32_t v, int s)
+{
+    return (v << s) | (v >> (32 - s));
+}
+
+static void qr_sha1_block(uint32_t h[5], const uint8_t *p)
+{
+    uint32_t w[80];
+    for (int i = 0; i < 16; i++)
+        w[i] = ((uint32_t)p[i*4] << 24) | ((uint32_t)p[i*4+1] << 16) |
+               ((uint32_t)p[i*4+2] << 8) | (uint32_t)p[i*4+3];
+    for (int i = 16; i < 80; i++)
+        w[i] = qr_rotl32(w[i-3] ^ w[i-8] ^ w[i-14] ^ w[i-16], 1);
+    uint32_t a = h[0], b = h[1], c = h[2], d = h[3], e = h[4];
+    for (int i = 0; i < 80; i++) {
+        uint32_t f, k;
+        if (i < 20)      { f = (b & c) | ((~b) & d);          k = 0x5A827999; }
+        else if (i < 40) { f = b ^ c ^ d;                     k = 0x6ED9EBA1; }
+        else if (i < 60) { f = (b & c) | (b & d) | (c & d);   k = 0x8F1BBCDC; }
+        else             { f = b ^ c ^ d;                     k = 0xCA62C1D6; }
+        uint32_t t = qr_rotl32(a, 5) + f + e + k + w[i];
+        e = d; d = c; c = qr_rotl32(b, 30); b = a; a = t;
+    }
+    h[0] += a; h[1] += b; h[2] += c; h[3] += d; h[4] += e;
+}
+
+static void qr_sha1(const uint8_t *msg, size_t len, uint8_t out[20])
+{
+    uint32_t h[5] = { 0x67452301, 0xEFCDAB89, 0x98BADCFE,
+                      0x10325476, 0xC3D2E1F0 };
+    size_t i = 0;
+    while (len - i >= 64) { qr_sha1_block(h, msg + i); i += 64; }
+
+    uint8_t block[64];
+    size_t rem = len - i;
+    memcpy(block, msg + i, rem);
+    block[rem++] = 0x80;
+    if (rem > 56) {
+        memset(block + rem, 0, 64 - rem);
+        qr_sha1_block(h, block);
+        rem = 0;
+        memset(block, 0, 64);
+    }
+    memset(block + rem, 0, 56 - rem);
+    uint64_t bits = (uint64_t)len * 8;
+    for (int j = 0; j < 8; j++)
+        block[56 + j] = (uint8_t)(bits >> (56 - j * 8));
+    qr_sha1_block(h, block);
+
+    for (int j = 0; j < 5; j++) {
+        out[j*4]   = (uint8_t)(h[j] >> 24);
+        out[j*4+1] = (uint8_t)(h[j] >> 16);
+        out[j*4+2] = (uint8_t)(h[j] >> 8);
+        out[j*4+3] = (uint8_t)(h[j]);
+    }
+}
+
+static void qr_b64(const uint8_t *in, size_t inlen, char *out)
+{
+    static const char T[] =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    size_t o = 0;
+    size_t i = 0;
+    for (; i + 3 <= inlen; i += 3) {
+        uint32_t v = ((uint32_t)in[i] << 16) | ((uint32_t)in[i+1] << 8) | in[i+2];
+        out[o++] = T[(v >> 18) & 63];
+        out[o++] = T[(v >> 12) & 63];
+        out[o++] = T[(v >> 6) & 63];
+        out[o++] = T[v & 63];
+    }
+    if (inlen - i == 1) {
+        uint32_t v = (uint32_t)in[i] << 16;
+        out[o++] = T[(v >> 18) & 63];
+        out[o++] = T[(v >> 12) & 63];
+        out[o++] = '=';
+        out[o++] = '=';
+    } else if (inlen - i == 2) {
+        uint32_t v = ((uint32_t)in[i] << 16) | ((uint32_t)in[i+1] << 8);
+        out[o++] = T[(v >> 18) & 63];
+        out[o++] = T[(v >> 12) & 63];
+        out[o++] = T[(v >> 6) & 63];
+        out[o++] = '=';
+    }
+    out[o] = 0;
+}
+
+static int qr_read_full(int fd, void *buf, size_t n)
+{
+    uint8_t *p = (uint8_t *)buf;
+    size_t got = 0;
+    while (got < n) {
+        ssize_t r = recv(fd, p + got, n - got, 0);
+        if (r <= 0) return 0;
+        got += (size_t)r;
+    }
+    return 1;
+}
+
+// keeps the fd alive after the 101: consumes client frames (close/ping)
+// so the connection stays healthy; real data flows server -> client only
+static void qr_ws_read_loop(int fd)
+{
+    for (;;) {
+        uint8_t h[2];
+        if (!qr_read_full(fd, h, 2)) return;
+        int opcode = h[0] & 0x0f;
+        uint64_t len = h[1] & 0x7f;
+        int masked = (h[1] & 0x80) != 0;
+        if (len == 126) {
+            uint8_t e[2];
+            if (!qr_read_full(fd, e, 2)) return;
+            len = ((uint64_t)e[0] << 8) | e[1];
+        } else if (len == 127) {
+            uint8_t e[8];
+            if (!qr_read_full(fd, e, 8)) return;
+            len = 0;
+            for (int i = 0; i < 8; i++) len = (len << 8) | e[i];
+        }
+        if (masked) {
+            uint8_t mask[4];
+            if (!qr_read_full(fd, mask, 4)) return;
+        }
+        while (len > 0) {
+            uint8_t sink[4096];
+            size_t want = len < sizeof(sink) ? (size_t)len : sizeof(sink);
+            if (!qr_read_full(fd, sink, want)) return;
+            len -= want;
+        }
+        if (opcode == 0x8) return;
+        if (opcode == 0x9) {
+            uint8_t pong[2] = { 0x8A, 0x00 };
+            qr_send_all(fd, (const char *)pong, 2);
+        }
+    }
 }
 
 #pragma mark - request handling (static helpers)
@@ -308,8 +451,27 @@ static char *qr_header_value(const char *req, const char *name)
     if (qmark) { *qmark = 0; query = qmark + 1; }
     const char *path = target;
 
+    if (_audioHub) {
+        char *wsKey = qr_header_value(req, "Sec-WebSocket-Key");
+        if (wsKey) {
+            char *upg = qr_header_value(req, "Upgrade");
+            BOOL isWs = upg && strncasecmp(upg, "websocket", 9) == 0;
+            if (upg) free(upg);
+            if (isWs && strcmp(path, "/ws/audio") == 0) {
+                free(wsKey);
+                [self wsHandshake:cfd request:req];
+                return;   // ws owns the fd until the client goes away
+            }
+            free(wsKey);
+        }
+    }
+
     if (strcmp(path, "/") == 0 || strcmp(path, "/index.html") == 0) {
-        qr_serve_file(cfd, [_webDir stringByAppendingPathComponent:@"index.html"],
+        NSString *page = _audioOnly ? @"audio.html" : @"index.html";
+        qr_serve_file(cfd, [_webDir stringByAppendingPathComponent:page],
+                      "text/html; charset=utf-8", "no-cache", NULL);
+    } else if (strcmp(path, "/audio") == 0 || strcmp(path, "/audio.html") == 0) {
+        qr_serve_file(cfd, [_webDir stringByAppendingPathComponent:@"audio.html"],
                       "text/html; charset=utf-8", "no-cache", NULL);
     } else if (strcmp(path, "/hls.min.js") == 0 || strcmp(path, "/hls.js") == 0) {
         qr_serve_file(cfd, [_webDir stringByAppendingPathComponent:@"hls.min.js"],
@@ -331,17 +493,24 @@ static char *qr_header_value(const char *req, const char *name)
             if (range) free(range);
         }
     } else if (strcmp(path, "/switch") == 0) {
-        char *c = qr_query_param(query, "c");
-        QRCamera cam = (c && strcmp(c, "front") == 0) ? QRCameraFront : QRCameraRear;
+        char *c = NULL;
+        QRCamera cam = QRCameraRear;
         BOOL ok = YES;
         NSString *msg = nil;
-        if (_engine) {
-            NSError *err = nil;
-            ok = [_engine switchTo:cam error:&err];
-            if (!ok) msg = [err localizedDescription];
-        } else {
+        if (_audioOnly) {
             ok = NO;
-            msg = @"no engine";
+            msg = @"audio-only mode: no camera (start daemon with --video)";
+        } else {
+            c = qr_query_param(query, "c");
+            cam = (c && strcmp(c, "front") == 0) ? QRCameraFront : QRCameraRear;
+            if (_engine) {
+                NSError *err = nil;
+                ok = [_engine switchTo:cam error:&err];
+                if (!ok) msg = [err localizedDescription];
+            } else {
+                ok = NO;
+                msg = @"no engine";
+            }
         }
         char body[512];
         int bl;
@@ -358,7 +527,7 @@ static char *qr_header_value(const char *req, const char *name)
         if (c) free(c);
     } else if (strcmp(path, "/toggle") == 0 || strcmp(path, "/start") == 0 ||
                strcmp(path, "/stop") == 0) {
-        // used by the Activator tweak (localhost) and the web page
+        // used by the NC widget (localhost) and the web page
         BOOL cur = _engine && _engine.running;
         BOOL want = (strcmp(path, "/stop") == 0) ? NO
                   : (strcmp(path, "/start") == 0) ? YES : !cur;
@@ -390,25 +559,75 @@ static char *qr_header_value(const char *req, const char *name)
                        "application/json", "no-store", NULL, bl);
         qr_send_all(cfd, body, (size_t)bl);
     } else if (strcmp(path, "/status") == 0) {
-        char body[512];
+        char body[640];
         const char *cam = (_engine && _engine.camera == QRCameraFront) ? "front" : "rear";
         snprintf(body, sizeof(body),
-            "{\"camera\":\"%s\",\"fps\":%.1f,\"drops\":%lu,"
-            "\"ffmpeg\":%s,\"pid\":%d,\"uptime\":%ld,\"streaming\":%s}",
+            "{\"mode\":\"%s\",\"camera\":\"%s\",\"fps\":%.1f,\"drops\":%lu,"
+            "\"ffmpeg\":%s,\"pid\":%d,\"uptime\":%ld,\"streaming\":%s,\"ws\":%lu}",
+            _audioOnly ? "audio-only" : "av",
             cam,
             _engine ? _engine.videoFps : 0.0,
             _engine ? (unsigned long)_engine.videoDrops : 0UL,
             (_proc && _proc.alive) ? "true" : "false",
             _proc ? (int)_proc.pid : -1,
             (long)(time(NULL) - _startedAt),
-            (_engine && _engine.running) ? "true" : "false");
+            (_engine && _engine.running) ? "true" : "false",
+            (unsigned long)(_audioHub ? [_audioHub clientCount] : 0UL));
         qr_send_status(cfd, 200, "OK", "application/json", "no-store", NULL,
                        (long long)strlen(body));
         qr_send_all(cfd, body, strlen(body));
+    } else if (strcmp(path, "/shutdown") == 0) {
+        // NC widget "Stop": kill ffmpeg, stop capture, exit. The requester
+        // already got this response; _exit skips further cleanup.
+        static const char *bye = "{\"ok\":true,\"bye\":1}";
+        qr_send_status(cfd, 200, "OK", "application/json", "no-store", NULL,
+                       (long long)strlen(bye));
+        qr_send_all(cfd, bye, strlen(bye));
+        QR_LOG("shutdown requested\n");
+        fflush(stderr);
+        if (_proc) [_proc stop];
+        if (_engine) [_engine stop];
+        _exit(0);
     } else {
         qr_send_status(cfd, 404, "Not Found", "text/plain", "no-cache", NULL, 0);
     }
     close(cfd);
+}
+
+- (void)wsHandshake:(int)fd request:(const char *)req
+{
+    char *key = qr_header_value(req, "Sec-WebSocket-Key");
+    if (!key) {
+        qr_send_status(fd, 400, "Bad Request", "text/plain", "no-store", NULL, 0);
+        return;
+    }
+    static const char *GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+    size_t klen = strlen(key);
+    size_t glen = strlen(GUID);
+    uint8_t *cat = (uint8_t *)malloc(klen + glen);
+    if (!cat) { free(key); return; }
+    memcpy(cat, key, klen);
+    memcpy(cat + klen, GUID, glen);
+    uint8_t digest[20];
+    qr_sha1(cat, klen + glen, digest);
+    free(cat);
+    free(key);
+
+    char accept[32];
+    qr_b64(digest, 20, accept);
+    char resp[256];
+    int n = snprintf(resp, sizeof(resp),
+        "HTTP/1.1 101 Switching Protocols\r\n"
+        "Upgrade: websocket\r\n"
+        "Connection: Upgrade\r\n"
+        "Sec-WebSocket-Accept: %s\r\n\r\n", accept);
+    qr_send_all(fd, resp, (size_t)n);
+
+    [_audioHub addClient:fd];
+    QR_LOG("ws client up (total %lu)\n", (unsigned long)[_audioHub clientCount]);
+    qr_ws_read_loop(fd);
+    [_audioHub removeClient:fd];
+    QR_LOG("ws client gone (total %lu)\n", (unsigned long)[_audioHub clientCount]);
 }
 
 @end
