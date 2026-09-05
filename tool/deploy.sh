@@ -64,7 +64,7 @@ $SSH "chown root:wheel /usr/local/bin/quietriotd /usr/local/bin/quietriot-ffmpeg
 say "(re)starting daemon"
 # unload first so launchd KeepAlive cannot respawn the old binary mid-swap
 $SSH "launchctl unload /Library/LaunchDaemons/com.quietriot.daemon.plist 2>/dev/null; \
-      killall quietriotd 2>/dev/null; sleep 1; \
+      killall quietriotd 2>/dev/null; killall -9 quietriot-ffmpeg 2>/dev/null; sleep 1; \
       rm -f $WORK/video.fifo $WORK/audio.fifo; \
       nohup /usr/local/bin/quietriotd --port 8080 --camera rear --logfile $WORK/daemon.log \
             </dev/null >/dev/null 2>&1 &"

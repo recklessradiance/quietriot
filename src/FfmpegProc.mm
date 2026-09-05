@@ -181,6 +181,7 @@ extern char **environ;
     posix_spawn_file_actions_t fa;
     posix_spawn_file_actions_init(&fa);
     int logfd = open(lgPath, O_WRONLY | O_CREAT | O_APPEND, 0644);
+    if (logfd >= 0) fcntl(logfd, F_SETFD, FD_CLOEXEC);
     if (logfd >= 0) {
         posix_spawn_file_actions_adddup2(&fa, logfd, STDOUT_FILENO);
         posix_spawn_file_actions_adddup2(&fa, logfd, STDERR_FILENO);

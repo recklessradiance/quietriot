@@ -59,6 +59,7 @@ static const char *qr_mime_ts   = "video/mp2t";
     }
     int one = 1;
     setsockopt(_listenFd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+    fcntl(_listenFd, F_SETFD, FD_CLOEXEC);
 
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
@@ -269,6 +270,7 @@ static char *qr_header_value(const char *req, const char *name)
             continue;
         }
         struct timeval tv = { 30, 0 };
+        fcntl(cfd, F_SETFD, FD_CLOEXEC);
         setsockopt(cfd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
         pthread_t t;
         if (pthread_create(&t, NULL, qr_conn_thread, (void *)(intptr_t)cfd) == 0)
