@@ -63,7 +63,25 @@ extern char **environ;
                              attributes:nil error:err];
     ok = ok && [fm createDirectoryAtPath:[_workDir stringByAppendingPathComponent:@"hls"]
              withIntermediateDirectories:YES attributes:nil error:err];
+    // the daemon may be (re)spawned by the Activator tweak from SpringBoard
+    // (mobile user); make the work dirs writable for it
+    chmod([_workDir fileSystemRepresentation], 0777);
+    chmod([[_workDir stringByAppendingPathComponent:@"hls"] fileSystemRepresentation], 0777);
     return ok;
+}
+
+- (void)ensureMonitor
+{
+    if (_monitor != nil) return;
+    _monitor = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, _queue);
+    dispatch_source_set_timer(_monitor, DISPATCH_TIME_NOW,
+                              2.0 * NSEC_PER_SEC, 1.0 * NSEC_PER_SEC);
+    dispatch_source_set_event_handler(_monitor, ^{
+        NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
+        [self checkProcess];
+        [pool drain];
+    });
+    dispatch_resume(_monitor);
 }
 
 - (BOOL)spawnWithParams:(NSError **)err
@@ -185,6 +203,7 @@ extern char **environ;
     }
     _pid = pid;
     _startedOnce = YES;
+    [self ensureMonitor];
     QR_LOG("spawned pid %d (%dx%d@%d, %dHz/%dch, %dkbps v / %dkbps a)\n",
            (int)_pid, _w, _h, _fps, _rate, _ch, _videoBitrate, _audioBitrate);
     [pool drain];
@@ -197,17 +216,7 @@ extern char **environ;
 {
     _w = w; _h = h; _rate = rate; _ch = ch; _fps = _fps > 0 ? _fps : 15;
     BOOL ok = [self spawnWithParams:err];
-    if (ok && _monitor == nil) {
-        _monitor = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, _queue);
-        dispatch_source_set_timer(_monitor, DISPATCH_TIME_NOW,
-                                  2.0 * NSEC_PER_SEC, 1.0 * NSEC_PER_SEC);
-        dispatch_source_set_event_handler(_monitor, ^{
-            NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
-            [self checkProcess];
-            [pool drain];
-        });
-        dispatch_resume(_monitor);
-    }
+    if (ok) [self ensureMonitor];
     return ok;
 }
 
@@ -279,10 +288,8 @@ extern char **environ;
 
 - (void)stop
 {
-    if (_monitor) {
-        dispatch_source_cancel(_monitor);
-        _monitor = nil;
-    }
+    // NOTE: the monitor source stays alive (a no-op while _pid <= 0) so a
+    // later restart stays supervised; only dealloc cancels it.
     if (_pid > 0) {
         kill(_pid, SIGTERM);
         int st;
@@ -298,11 +305,20 @@ extern char **environ;
     qr_fifo_close(&_aFifo);
     unlink([[_workDir stringByAppendingPathComponent:@"video.fifo"] fileSystemRepresentation]);
     unlink([[_workDir stringByAppendingPathComponent:@"audio.fifo"] fileSystemRepresentation]);
+    // make the next start() spawn ffmpeg from scratch
+    _startedOnce = NO;
+    _restarts = 0;
+    _pendW = _pendH = _pendRate = _pendCh = 0;
+    _w = _h = _rate = _ch = 0;
 }
 
 - (void)dealloc
 {
     [self stop];
+    if (_monitor) {
+        dispatch_source_cancel(_monitor);
+        _monitor = nil;
+    }
     [_ffmpegPath release];
     [_workDir release];
     [super dealloc];

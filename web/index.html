@@ -21,6 +21,7 @@
 <div id="status">connecting&hellip;</div>
 <video id="v" autoplay playsinline webkit-playsinline controls muted></video>
 <div class="btns">
+  <button id="power">Stop</button>
   <button id="rear">Rear</button>
   <button id="front">Front</button>
   <button id="reload">Reload</button>
@@ -34,7 +35,9 @@
   var rear = document.getElementById('rear');
   var front = document.getElementById('front');
   var reload = document.getElementById('reload');
+  var power = document.getElementById('power');
   var cam = 'rear';
+  var streaming = true;
 
   function setStatus(s) { status.innerHTML = s; }
 
@@ -82,6 +85,8 @@
   function refreshBtns() {
     rear.className = cam === 'rear' ? 'active' : '';
     front.className = cam === 'front' ? 'active' : '';
+    power.innerHTML = streaming ? 'Stop' : 'Start';
+    power.className = streaming ? 'active' : '';
   }
 
   function poll() {
@@ -93,9 +98,11 @@
         try {
           var s = eval('(' + x.responseText + ')');
           cam = s.camera;
+          streaming = !!s.streaming;
           refreshBtns();
           setStatus(
-            'cam: ' + s.camera + ' &middot; fps: ' + (s.fps ? s.fps.toFixed(1) : '-') +
+            (streaming ? '<b>live</b>' : 'stopped') + ' &middot; cam: ' + s.camera +
+            ' &middot; fps: ' + (s.fps ? s.fps.toFixed(1) : '-') +
             ' &middot; drops: ' + s.drops +
             ' &middot; encoder: ' + (s.ffmpeg ? 'OK' : '<b>DOWN</b>') +
             ' &middot; up: ' + Math.floor(s.uptime / 60) + 'm'
@@ -119,6 +126,14 @@
   rear.onclick = function () { switchCam('rear'); };
   front.onclick = function () { switchCam('front'); };
   reload.onclick = function () { play(); };
+  power.onclick = function () {
+    var x = new XMLHttpRequest();
+    x.open('GET', '/toggle', true);
+    x.onreadystatechange = function () {
+      if (x.readyState === 4) poll();
+    };
+    x.send(null);
+  };
 
   play();
   poll();

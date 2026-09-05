@@ -354,18 +354,52 @@ static char *qr_header_value(const char *req, const char *name)
                        "application/json", "no-store", NULL, bl);
         qr_send_all(cfd, body, (size_t)bl);
         if (c) free(c);
+    } else if (strcmp(path, "/toggle") == 0 || strcmp(path, "/start") == 0 ||
+               strcmp(path, "/stop") == 0) {
+        // used by the Activator tweak (localhost) and the web page
+        BOOL cur = _engine && _engine.running;
+        BOOL want = (strcmp(path, "/stop") == 0) ? NO
+                  : (strcmp(path, "/start") == 0) ? YES : !cur;
+        NSString *msg = nil;
+        if (want != cur) {
+            if (want) {
+                NSError *e = nil;
+                if (![_engine start:&e]) msg = [e localizedDescription];
+            } else {
+                [_proc stop];
+                [_engine stop];
+            }
+        }
+        BOOL streaming = _engine && _engine.running;
+        const char *cam = (_engine && _engine.camera == QRCameraFront) ? "front" : "rear";
+        char body[512];
+        int bl;
+        if (msg) {
+            bl = snprintf(body, sizeof(body),
+                "{\"ok\":false,\"streaming\":%s,\"error\":\"%s\"}",
+                streaming ? "true" : "false",
+                [msg UTF8String] ? [msg UTF8String] : "start failed");
+        } else {
+            bl = snprintf(body, sizeof(body),
+                "{\"ok\":true,\"streaming\":%s,\"camera\":\"%s\"}",
+                streaming ? "true" : "false", cam);
+        }
+        qr_send_status(cfd, msg ? 500 : 200, msg ? "Error" : "OK",
+                       "application/json", "no-store", NULL, bl);
+        qr_send_all(cfd, body, (size_t)bl);
     } else if (strcmp(path, "/status") == 0) {
         char body[512];
         const char *cam = (_engine && _engine.camera == QRCameraFront) ? "front" : "rear";
         snprintf(body, sizeof(body),
             "{\"camera\":\"%s\",\"fps\":%.1f,\"drops\":%lu,"
-            "\"ffmpeg\":%s,\"pid\":%d,\"uptime\":%ld}",
+            "\"ffmpeg\":%s,\"pid\":%d,\"uptime\":%ld,\"streaming\":%s}",
             cam,
             _engine ? _engine.videoFps : 0.0,
             _engine ? (unsigned long)_engine.videoDrops : 0UL,
             (_proc && _proc.alive) ? "true" : "false",
             _proc ? (int)_proc.pid : -1,
-            (long)(time(NULL) - _startedAt));
+            (long)(time(NULL) - _startedAt),
+            (_engine && _engine.running) ? "true" : "false");
         qr_send_status(cfd, 200, "OK", "application/json", "no-store", NULL,
                        (long long)strlen(body));
         qr_send_all(cfd, body, strlen(body));

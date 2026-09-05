@@ -11,6 +11,8 @@
 		<string>8080</string>
 		<string>--camera</string>
 		<string>rear</string>
+		<string>--logfile</string>
+		<string>/var/mobile/Library/quietriot/daemon.log</string>
 	</array>
 	<key>RunAtLoad</key>
 	<true/>

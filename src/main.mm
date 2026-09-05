@@ -22,7 +22,7 @@ static void usage(void)
     fprintf(stderr,
         "quietriotd - live camera/mic HLS streamer for jailbroken iOS 6.1.3\n"
         "usage: quietriotd [--port N] [--camera rear|front] [--fps N]\n"
-        "                  [--workdir PATH] [--ffmpeg PATH]\n"
+        "                  [--workdir PATH] [--ffmpeg PATH] [--logfile PATH]\n"
         "                  [--video-bitrate K] [--audio-bitrate K]\n");
 }
 
@@ -39,6 +39,7 @@ int main(int argc, char **argv)
     QRCamera initialCamera = QRCameraRear;
     NSString *workdir = @"/var/mobile/Library/quietriot";
     NSString *ffbin = @"/usr/local/bin/quietriot-ffmpeg";
+    NSString *logfile = nil;
 
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
@@ -50,12 +51,20 @@ int main(int argc, char **argv)
             workdir = [NSString stringWithUTF8String:argv[++i]];
         else if (strcmp(a, "--ffmpeg") == 0 && i + 1 < argc)
             ffbin = [NSString stringWithUTF8String:argv[++i]];
+        else if (strcmp(a, "--logfile") == 0 && i + 1 < argc)
+            logfile = [NSString stringWithUTF8String:argv[++i]];
         else if (strcmp(a, "--video-bitrate") == 0 && i + 1 < argc) vb = atoi(argv[++i]);
         else if (strcmp(a, "--audio-bitrate") == 0 && i + 1 < argc) ab = atoi(argv[++i]);
         else { usage(); return 1; }
     }
 
     @autoreleasepool {
+        if (logfile) {
+            // route all daemon logs to a file regardless of how we were
+            // started (launchd, ssh nohup, SpringBoard-spawned)
+            freopen([logfile fileSystemRepresentation], "a", stdout);
+            freopen([logfile fileSystemRepresentation], "a", stderr);
+        }
         if (initialCamera == QRCameraFront) setenv("QR_CAM", "front", 1);
         CaptureEngine *engine = [[CaptureEngine alloc] initWithFps:fps];
         FfmpegProc *proc = [[FfmpegProc alloc] init];

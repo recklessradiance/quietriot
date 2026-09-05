@@ -45,28 +45,52 @@ Via Cydia: install **OpenSSH**. Default `root` / `alpine`.
 ## Deploy
 
 ```sh
-tool/deploy.sh 192.168.x.x          # installs binaries + web page + plist, loads daemon
-tool/deploy.sh 192.168.x.x logs     # tail the daemon log
-tool/deploy.sh 192.168.x.x stop     # unload daemon
+tool/deploy.sh 192.168.x.x          # installs daemon + ffmpeg + web + tweak, restarts, resprings
+tool/deploy.sh 192.168.x.x logs     # tail daemon + ffmpeg logs
+tool/deploy.sh 192.168.x.x stop     # stop daemon
 ```
 
-The daemon runs as root via launchd (`/Library/LaunchDaemons/com.quietriot.daemon.plist`).
+The daemon runs as root via launchd (`/Library/LaunchDaemons/com.quietriot.daemon.plist`);
+`deploy.sh` also falls back to a `nohup` start (launchctl over non-interactive SSH
+fails; see gotchas). It installs the Activator tweak into
+`/Library/MobileSubstrate/DynamicLibraries/` and respings SpringBoard at the end.
 Both binaries are fake-signed with `ldid -S` before upload (camera access from a
 CLI daemon needs a valid signature; no Apple developer account required).
 
 Run it manually while debugging:
 
 ```sh
-ssh root@<phone-ip> "quietriotd --port 8080 --camera rear"
+ssh root@<phone-ip> "quietriotd --port 8080 --camera rear --logfile /var/mobile/Library/quietriot/daemon.log"
 ```
+
+## Start/stop from the phone (Activator)
+
+The `quietriotctl` tweak (source: `Tweak/Tweak.m`, built by
+`tool/build-tweak.sh`, loaded into SpringBoard only) registers three Activator
+actions after a respring: **QuietRiot: Toggle / Start / Stop stream**. Assign
+them to any gesture in the Activator settings app.
+
+- The tweak is privilege-free: it just `GET`s `http://127.0.0.1:8080/toggle`
+  (plus `/start`, `/stop`) on localhost.
+- If the daemon is not running, the toggle/start actions spawn it as the
+  mobile user (all daemon state lives under `/var/mobile/Library/quietriot`,
+  and iOS 6 has no camera TCC prompts), so gestures work even with the daemon
+  dead.
+- Feedback: a small alert shows `Streaming ON/OFF`.
+- The web page has the same Start/Stop button (`/toggle`), and `/status`
+  reports a `streaming` flag.
+- Note: `deploy.sh`/root `killall` can stop even a SpringBoard-spawned (mobile)
+  daemon; after a reboot the launchd plist starts the root instance again.
 
 ## Flags
 
 ```
 --port N          HTTP port (default 8080)
 --camera rear|front
+--fps N           default 15
 --workdir PATH    default /var/mobile/Library/quietriot
 --ffmpeg PATH     default /usr/local/bin/quietriot-ffmpeg
+--logfile PATH    redirect daemon stdout/stderr to this file
 --video-bitrate K default 400
 --audio-bitrate K default 64
 ```

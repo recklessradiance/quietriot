@@ -91,7 +91,28 @@
 
 - (BOOL)start:(NSError **)err
 {
-    if (_running) return YES;    _session = [[AVCaptureSession alloc] init];
+    if (_running) return YES;
+
+    if (_session != nil) {
+        // resume after stop(): the session keeps its wiring (and camera),
+        // just re-run it. First buffers re-announce stream params to the
+        // delegate so ffmpeg spawns again.
+        AVAudioSession *as = [AVAudioSession sharedInstance];
+        [as setCategory:AVAudioSessionCategoryRecord error:nil];
+        if (!getenv("QR_NO_AUDIO")) [as setActive:YES error:nil];
+        _running = YES;
+        AVCaptureSession *s = _session;
+        dispatch_async(_configQueue, ^{
+            NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
+            [s startRunning];
+            [self applyOrientation];
+            QR_LOG("resume: startRunning done running=%d\n", s.running ? 1 : 0);
+            [pool drain];
+        });
+        return YES;
+    }
+
+    _session = [[AVCaptureSession alloc] init];
     // Medium preset = 480x360 on the 4s; the sane ceiling for A5 software x264.
     _session.sessionPreset = AVCaptureSessionPresetMedium;
     [[NSNotificationCenter defaultCenter] addObserver:self
@@ -138,7 +159,7 @@
     QR_LOG("session wiring done: videoConns=%lu audioConns=%lu\n",
            (unsigned long)[_videoOut.connections count],
            (unsigned long)[_audioOut.connections count]);
-    _camera = QRCameraRear;
+    _camera = (pos == AVCaptureDevicePositionFront) ? QRCameraFront : QRCameraRear;
 
     [self applyOrientation];
 
@@ -202,6 +223,10 @@
         [s stopRunning];
     });
     [[AVAudioSession sharedInstance] setActive:NO error:nil];
+    // a later start() must re-announce stream params (w/h/fps, audio) so the
+    // ffmpeg side can spawn fresh
+    _videoAnnounced = NO;
+    _audioAnnounced = NO;
 }
 
 - (BOOL)switchTo:(QRCamera)camera error:(NSError **)err
