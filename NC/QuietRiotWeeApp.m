@@ -116,6 +116,7 @@ static void qr_spawn_daemon(void)
     UILabel *_status;
     UIButton *_startBtn;
     UIButton *_stopBtn;
+    NSTimer *_timer;
 }
 - (void)refreshStatus;
 - (void)startTapped;
@@ -190,6 +191,9 @@ static void qr_spawn_daemon(void)
 
 - (void)unloadView
 {
+    [_timer invalidate];
+    [_timer release];
+    _timer = nil;
     [_view release];
     _view = nil;
     _status = nil;
@@ -200,14 +204,34 @@ static void qr_spawn_daemon(void)
 - (void)viewWillAppear
 {
     [self refreshStatus];
+    if (!_timer) {
+        _timer = [NSTimer scheduledTimerWithTimeInterval:3.0
+            target:self selector:@selector(refreshStatus)
+            userInfo:nil repeats:YES];
+        [_timer retain];
+    }
 }
 
 - (void)viewDidDisappear
 {
+    [_timer invalidate];
+    [_timer release];
+    _timer = nil;
 }
 
 - (void)clearShapshotImage
 {
+}
+
+static int qr_json_int(const char *body, const char *key)
+{
+    if (!body) return -1;
+    const char *p = strstr(body, key);
+    if (!p) return -1;
+    p += strlen(key);
+    while (*p && *p != '-' && (*p < '0' || *p > '9')) p++;
+    if (!*p) return -1;
+    return atoi(p);
 }
 
 - (void)refreshStatus
@@ -217,17 +241,31 @@ static void qr_spawn_daemon(void)
         NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
         char *body = qr_http_get("/status", 700);
         NSString *txt;
+        UIColor *col;
         if (body) {
-            txt = (strstr(body, "\"streaming\":true") != NULL)
-                ? @"live - streaming mic"
-                : @"daemon up - streaming off";
+            BOOL live = strstr(body, "\"streaming\":true") != NULL;
+            int ws = qr_json_int(body, "\"ws\":");
+            if (live) {
+                col = [UIColor colorWithRed:0.30 green:0.85 blue:0.35 alpha:1];
+                if (ws > 0)
+                    txt = [NSString stringWithFormat:@"● listening · %d listener%s",
+                           ws, (ws == 1) ? "" : "s"];
+                else
+                    txt = @"● listening · no listeners yet";
+            } else {
+                col = [UIColor colorWithRed:0.95 green:0.70 blue:0.15 alpha:1];
+                txt = @"● daemon up · paused (tap Start)";
+            }
             free(body);
         } else {
-            txt = @"daemon not running";
+            col = [UIColor colorWithRed:0.95 green:0.30 blue:0.25 alpha:1];
+            txt = @"● not running (tap Start)";
         }
         dispatch_async(dispatch_get_main_queue(), ^{
-            if (me->_status)
+            if (me->_status) {
                 me->_status.text = txt;
+                me->_status.textColor = col;
+            }
         });
         [pool drain];
     });
