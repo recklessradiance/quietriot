@@ -70,12 +70,20 @@ static const char *qr_mime_ts   = "video/mp2t";
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = htonl(INADDR_ANY);
     addr.sin_port = htons(_port);
-    if (bind(_listenFd, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
-        if (err) *err = [NSError errorWithDomain:@"quietriot" code:11
-            userInfo:[NSDictionary dictionaryWithObject:
-                      [NSString stringWithFormat:@"bind port %d failed: %s", _port, strerror(errno)]
-                                                 forKey:NSLocalizedDescriptionKey]];
-        return NO;
+    // a previous instance may still be dying (shutdown/killall just issued):
+    // wait for the port to be freed instead of failing immediately
+    int tries = 0;
+    while (bind(_listenFd, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
+        if (errno != EADDRINUSE || tries >= 5) {
+            if (err) *err = [NSError errorWithDomain:@"quietriot" code:11
+                userInfo:[NSDictionary dictionaryWithObject:
+                          [NSString stringWithFormat:@"bind port %d failed: %s", _port, strerror(errno)]
+                                                     forKey:NSLocalizedDescriptionKey]];
+            return NO;
+        }
+        fprintf(stderr, "[http] port %d busy, retrying (%d/5)...\n", _port, tries + 1);
+        sleep(1);
+        tries++;
     }
     listen(_listenFd, 16);
     qr_shared_server = self;

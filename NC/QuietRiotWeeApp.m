@@ -13,7 +13,16 @@
 #define QR_PORT 8080
 #define QR_DAEMON "/usr/local/bin/quietriotd"
 #define QR_LOGFILE "/var/mobile/Library/quietriot/daemon.log"
-#define QR_SPAWN_CMD "quietriotd --port 8080 --logfile " QR_LOGFILE " &"
+#define QR_WLOG "/var/mobile/Library/quietriot/widget.log"
+// frees the port first (a dying previous instance may still hold 8080),
+// then replaces sh with the daemon; trailing echo only runs if exec fails
+#define QR_SPAWN_SH \
+    "echo \"$(date +%T) sh-start\" >> " QR_WLOG "; " \
+    "killall quietriotd 2>/dev/null; " \
+    "killall -9 quietriot-ffmpeg 2>/dev/null; " \
+    "sleep 1; " \
+    "exec " QR_DAEMON " --port 8080 --logfile " QR_LOGFILE "; " \
+    "echo \"$(date +%T) daemon-exec-failed-$?\" >> " QR_WLOG
 
 @protocol BBWeeAppController <NSObject>
 @required
@@ -122,8 +131,7 @@ static pid_t qr_spawn_daemon(void)
 {
     pid_t pid = 0;
     const char *sh = "/bin/sh";
-    char *argv[] = { (char *)sh, (char *)"-c",
-                     "exec " QR_DAEMON " " QR_SPAWN_CMD, NULL };
+    char *argv[] = { (char *)sh, (char *)"-c", QR_SPAWN_SH, NULL };
     int rc = posix_spawn(&pid, sh, NULL, NULL, argv, qr_spawn_env);
 
     char line[160];
