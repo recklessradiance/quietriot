@@ -14,15 +14,6 @@
 #define QR_DAEMON "/usr/local/bin/quietriotd"
 #define QR_LOGFILE "/var/mobile/Library/quietriot/daemon.log"
 #define QR_WLOG "/var/mobile/Library/quietriot/widget.log"
-// frees the port first (a dying previous instance may still hold 8080),
-// then replaces sh with the daemon; trailing echo only runs if exec fails
-#define QR_SPAWN_SH \
-    "echo \"$(date +%T) sh-start\" >> " QR_WLOG "; " \
-    "killall quietriotd 2>/dev/null; " \
-    "killall -9 quietriot-ffmpeg 2>/dev/null; " \
-    "sleep 1; " \
-    "exec " QR_DAEMON " --port 8080 --logfile " QR_LOGFILE "; " \
-    "echo \"$(date +%T) daemon-exec-failed-$?\" >> " QR_WLOG
 
 @protocol BBWeeAppController <NSObject>
 @required
@@ -127,19 +118,60 @@ static char *qr_spawn_env[] = {
     NULL
 };
 
+// diagnostics go to the PIPE (captured by the widget, which can write
+// widget.log); SB-spawned shells may be sandboxed and unable to write files
+#define QR_SPAWN_SH \
+    "echo \"$(date +%T) sh-start\"; " \
+    "id; " \
+    "killall quietriotd 2>/dev/null; " \
+    "killall -9 quietriot-ffmpeg 2>/dev/null; " \
+    "echo killed-old; " \
+    "sleep 1; " \
+    "exec " QR_DAEMON " --port 8080 --logfile " QR_LOGFILE "; " \
+    "echo \"$(date +%T) daemon-exec-failed-$?\""
+
 static pid_t qr_spawn_daemon(void)
 {
+    int pfd[2];
+    if (pipe(pfd) != 0) { qr_log("pipe failed\n"); return -1; }
+
+    posix_spawn_file_actions_t fa;
+    posix_spawn_file_actions_init(&fa);
+    posix_spawn_file_actions_adddup2(&fa, pfd[1], STDOUT_FILENO);
+    posix_spawn_file_actions_adddup2(&fa, pfd[1], STDERR_FILENO);
+    posix_spawn_file_actions_addclose(&fa, pfd[0]);
+
     pid_t pid = 0;
     const char *sh = "/bin/sh";
     char *argv[] = { (char *)sh, (char *)"-c", QR_SPAWN_SH, NULL };
-    int rc = posix_spawn(&pid, sh, NULL, NULL, argv, qr_spawn_env);
+    int rc = posix_spawn(&pid, sh, &fa, NULL, argv, qr_spawn_env);
+    posix_spawn_file_actions_destroy(&fa);
+    close(pfd[1]);
 
     char line[160];
     snprintf(line, sizeof(line), "spawn rc=%d pid=%d err=%s\n",
              rc, (rc == 0) ? (int)pid : -1,
              (rc == 0) ? "-" : strerror(rc));
     qr_log(line);
-    return (rc == 0) ? pid : -1;
+    if (rc != 0) { close(pfd[0]); return -1; }
+
+    // capture child diagnostics (id/exec errors) until EOF or ~4s
+    fcntl(pfd[0], F_SETFL, O_NONBLOCK);
+    char buf[4096];
+    int waited = 0;
+    for (;;) {
+        ssize_t n = read(pfd[0], buf, sizeof(buf) - 1);
+        if (n > 0) { buf[n] = 0; qr_log(buf); }
+        else if (n == 0) break;
+        else {
+            if (waited >= 4000) break;
+            usleep(50000);
+            waited += 50;
+        }
+    }
+    qr_log("--- capture end ---\n");
+    close(pfd[0]);
+    return pid;
 }
 
 @interface QuietRiotWeeAppController : NSObject <BBWeeAppController>
