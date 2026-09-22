@@ -8,5 +8,10 @@ vendor/ffmpeg-4.4.1.tar.xz
 vendor/vendor-dl.log
 tool/prefix/
 tool/*.log
+tool/gas-build/
+cydia-repo/
+.pio/
+__pycache__/
+.venv/
 *.deb
 *.ipa

@@ -65,6 +65,48 @@ tool/build-x264-ffmpeg.sh # builds tool/prefix/bin/ffmpeg (armv7, static)  [--vi
 
 Via Cydia: install **OpenSSH**. Default `root` / `alpine`.
 
+## Install as a Cydia package (.deb)
+
+Instead of deploy.sh, everything (daemon, ffmpeg, web pages, LaunchDaemon
+plist, NC widget) can be shipped as an installable .deb:
+
+```sh
+tool/build-deb.sh              # builds + packages dist/quietriot_1.0.0_iphoneos-arm.deb
+tool/build-deb.sh --no-ffmpeg  # package without the (large, GPL) ffmpeg binary
+```
+
+What `build-deb.sh` does: runs `make` + `tool/build-weeapp.sh` (+ the
+ffmpeg build if missing), fake-signs with `ldid -S`, then assembles the
+payload (`/usr/local/bin/quietriotd[+ffmpeg]`, LaunchDaemon plist, NC
+widget bundle, web pages into `/var/mobile/Library/quietriot/web`) with
+maintainer scripts:
+
+- `preinst`/`prerm` stop the daemon (`killall quietriotd quietriot-ffmpeg`)
+- `postinst` fixes perms/owners, loads the LaunchDaemon, respings so the
+  widget appears
+- `postrm` removes the data dir + widget and respings
+
+The deb is gzip-compressed because the iOS 6 dpkg cannot read xz debs.
+Binaries are pre-signed inside the package, so nothing is needed on-device.
+
+Install:
+
+```sh
+scp dist/quietriot_1.0.0_iphoneos-arm.deb root@<phone-ip>:/var/mobile/Documents/
+ssh root@<phone-ip> dpkg -i /var/mobile/Documents/quietriot_1.0.0_iphoneos-arm.deb
+```
+
+or open the .deb in Filza on the phone.
+
+Host a Cydia repo from the same files (serve the `cydia-repo/` dir over
+HTTP - GitHub Pages works):
+
+```sh
+tool/build-repo.sh            # creates dists/stable/... Packages(.gz) + Release
+```
+
+Then add the repo URL in Cydia -> Sources and install from there.
+
 ## Deploy
 
 ```sh
